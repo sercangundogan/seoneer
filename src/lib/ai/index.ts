@@ -53,6 +53,7 @@ export async function generateStructured<T extends z.ZodType>(
       prompt: args.prompt,
       temperature: args.temperature ?? 0.2,
       schema: args.schema,
+      abortSignal: AbortSignal.timeout(90_000),
     });
 
     return {

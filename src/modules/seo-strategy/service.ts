@@ -205,26 +205,41 @@ export async function selectAction(projectId: string): Promise<ActionSelection> 
     limit: 10,
   });
 
+  const profile = intelligence?.profile as ProjectIntelligenceProfile | undefined;
+  const heuristic = () => heuristicSelectAction(profile, audit?.findings);
+
   if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
-    const result = await generateStructured({
-      tier: "strong",
-      system: ACTION_SELECTOR_PROMPT,
-      prompt: JSON.stringify({
-        profile: intelligence?.profile,
-        audit: audit?.findings,
-        keywords,
-        previousActions: previous.map((a) => ({
-          type: a.actionType,
-          status: a.status,
-          summary: a.decisionSummary,
-        })),
-      }),
-      schema: actionSelectionSchema,
-    });
-    return result.object;
+    try {
+      const result = await generateStructured({
+        tier: "mid",
+        system: ACTION_SELECTOR_PROMPT,
+        prompt: JSON.stringify({
+          // Keep payload small — full profiles often stall structured generation
+          product: profile?.product,
+          website: profile?.website,
+          seo: profile?.seo,
+          audit: audit?.findings,
+          keywords: keywords.map((k) => ({
+            query: k.query,
+            score: k.score,
+            metrics: k.metrics,
+          })),
+          previousActions: previous.map((a) => ({
+            type: a.actionType,
+            status: a.status,
+            summary: a.decisionSummary,
+          })),
+        }),
+        schema: actionSelectionSchema,
+      });
+      return result.object;
+    } catch (error) {
+      console.error("Action selection AI failed; using heuristic", error);
+      return heuristic();
+    }
   }
 
-  return heuristicSelectAction(intelligence?.profile as ProjectIntelligenceProfile | undefined, audit?.findings);
+  return heuristic();
 }
 
 function heuristicSelectAction(
@@ -339,6 +354,28 @@ export async function runActionCycle(projectId: string) {
   });
   if (!project) throw new Error("Project not found");
 
+  try {
+    return await runActionCycleInner(projectId, project);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "SEO action cycle failed";
+    if (!/already waiting|already in progress/i.test(message)) {
+      await db
+        .update(schema.projects)
+        .set({
+          agentStatus: "error",
+          agentStatusDetail: message.slice(0, 300),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.projects.id, projectId));
+    }
+    throw error;
+  }
+}
+
+async function runActionCycleInner(
+  projectId: string,
+  project: typeof schema.projects.$inferSelect,
+) {
   const active = await db.query.seoActions.findFirst({
     where: and(
       eq(schema.seoActions.projectId, projectId),
