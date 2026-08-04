@@ -80,6 +80,7 @@ export default function ProjectPage() {
   }, [forcePoll]);
 
   async function runCycle() {
+    if (busy || forcePoll || isAgentWorking(data?.project?.agentStatus)) return;
     setBusy(true);
     setForcePoll(true);
     // Optimistic UI so status updates immediately
@@ -145,6 +146,10 @@ export default function ProjectPage() {
 
   const { project, intelligence, audit, roadmap, actions, logs, billing } = data;
   const blocked = project.agentStatus === "blocked";
+  const cycleRunning =
+    busy || forcePoll || isAgentWorking(project.agentStatus);
+  const awaitingApproval = project.agentStatus === "awaiting_approval";
+  const runDisabled = blocked || cycleRunning || awaitingApproval;
 
   return (
     <AppShell title={project.name}>
@@ -155,16 +160,24 @@ export default function ProjectPage() {
         projectId={project.id}
         actions={
           <>
-            <Button variant="secondary" onClick={() => void connectGsc()} disabled={busy}>
+            <Button variant="secondary" onClick={() => void connectGsc()} disabled={cycleRunning}>
               Connect GSC
             </Button>
             <Button
               onClick={() => void runCycle()}
-              loading={busy}
-              disabled={blocked}
-              title={blocked ? project.agentStatusDetail ?? "Agent is blocked" : undefined}
+              loading={cycleRunning}
+              disabled={runDisabled}
+              title={
+                blocked
+                  ? project.agentStatusDetail ?? "Agent is blocked"
+                  : awaitingApproval
+                    ? "Approve the pending update before starting another action"
+                    : cycleRunning
+                      ? "SEO action in progress"
+                      : undefined
+              }
             >
-              Run SEO action
+              {cycleRunning ? "Running…" : "Run SEO action"}
             </Button>
           </>
         }
