@@ -14,7 +14,7 @@ export default function SignInPage() {
       </p>
       <Button
         className="mt-6"
-        onClick={() => void authClient.signIn.social({ provider: "github", callbackURL: "/dashboard" })}
+        onClick={() => void authClient.signIn.social({ provider: "github", callbackURL: "/home" })}
       >
         Continue with GitHub
       </Button>

@@ -1,7 +1,12 @@
 import Link from "next/link";
+import { headers } from "next/headers";
 import { Button } from "@/components/ui/primitives";
+import { auth } from "@/modules/auth";
 
-export default function HomePage() {
+export default async function HomePage() {
+  const session = await auth.api.getSession({ headers: await headers() });
+  const ctaHref = session?.user ? "/home" : "/signin";
+
   return (
     <div className="relative min-h-screen overflow-hidden">
       <div
@@ -14,8 +19,8 @@ export default function HomePage() {
       />
       <header className="relative mx-auto flex w-full max-w-5xl items-center justify-between px-6 py-6">
         <span className="text-lg font-semibold tracking-tight">Seoneer</span>
-        <Link href="/signin" className="text-sm text-[var(--fg-muted)] hover:text-[var(--fg)]">
-          Sign in
+        <Link href={ctaHref} className="text-sm text-[var(--fg-muted)] hover:text-[var(--fg)]">
+          {session?.user ? "Open workspace" : "Sign in"}
         </Link>
       </header>
       <main className="relative mx-auto flex w-full max-w-5xl flex-1 flex-col justify-center px-6 pb-24 pt-16">
@@ -27,11 +32,8 @@ export default function HomePage() {
           Understands your product and codebase, picks the highest-value safe action, and ships it as a pull request — not a content farm.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
-          <Link href="/signin">
-            <Button>Connect GitHub</Button>
-          </Link>
-          <Link href="/dashboard">
-            <Button variant="secondary">Open workspace</Button>
+          <Link href={ctaHref}>
+            <Button>{session?.user ? "Open workspace" : "Connect GitHub"}</Button>
           </Link>
         </div>
       </main>

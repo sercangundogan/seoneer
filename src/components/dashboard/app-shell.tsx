@@ -2,7 +2,6 @@ import Link from "next/link";
 
 const links = [
   { href: "/dashboard", label: "Overview" },
-  { href: "/onboarding", label: "Onboarding" },
   { href: "/billing", label: "Billing" },
 ];
 
@@ -16,7 +15,7 @@ export function AppShell({
   return (
     <div className="min-h-screen md:grid md:grid-cols-[220px_1fr]">
       <aside className="border-b border-[var(--border)] bg-[var(--bg-elevated)] px-5 py-6 md:border-b-0 md:border-r">
-        <Link href="/" className="text-lg font-semibold tracking-tight">
+        <Link href="/dashboard" className="text-lg font-semibold tracking-tight">
           Seoneer
         </Link>
         <p className="mt-1 text-xs text-[var(--fg-muted)]">SEO operations</p>

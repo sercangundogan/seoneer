@@ -45,7 +45,7 @@ pnpm dev
 
 Open [http://localhost:3000/signin](http://localhost:3000/signin) → **Continue with GitHub**.
 
-After first sign-in, Better Auth should create a user row and a workspace (via the `user.create` hook).
+After sign-in you are sent to `/home`, which routes to **onboarding** (new workspace) or **overview** (setup already complete).
 
 ## Production later
 

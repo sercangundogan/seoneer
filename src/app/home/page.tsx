@@ -2,18 +2,15 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/modules/auth";
 import { resolvePostAuthPath } from "@/modules/workspaces/post-auth";
-import OnboardingFlow from "@/components/onboarding/onboarding-flow";
 
-export default async function OnboardingPage() {
+/**
+ * Post-login gate: send new users to onboarding, ready users to overview.
+ */
+export default async function HomeGatePage() {
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session?.user) {
     redirect("/signin");
   }
 
-  const destination = await resolvePostAuthPath(session.user.id);
-  if (destination === "/dashboard") {
-    redirect("/dashboard");
-  }
-
-  return <OnboardingFlow />;
+  redirect(await resolvePostAuthPath(session.user.id));
 }
