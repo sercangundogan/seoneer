@@ -348,8 +348,25 @@ export async function runActionCycle(projectId: string) {
       ne(schema.seoActions.status, "cancelled"),
     ),
   });
-  if (active && !["awaiting_approval"].includes(active.status)) {
-    throw new Error("An SEO action cycle is already in progress for this project");
+  // Block while a cycle is mid-flight; awaiting_approval still counts as open work
+  if (active) {
+    await db
+      .update(schema.projects)
+      .set({
+        agentStatus:
+          active.status === "awaiting_approval" ? "awaiting_approval" : "selecting_action",
+        agentStatusDetail:
+          active.status === "awaiting_approval"
+            ? "An SEO update is already waiting for your approval"
+            : "An SEO action cycle is already in progress",
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.projects.id, projectId));
+    throw new Error(
+      active.status === "awaiting_approval"
+        ? "An SEO update is already waiting for your approval"
+        : "An SEO action cycle is already in progress for this project",
+    );
   }
 
   const billing = await canStartActionCycle(project.workspaceId);
@@ -365,14 +382,11 @@ export async function runActionCycle(projectId: string) {
     return { status: "blocked" as const, reason: billing.reason };
   }
 
-  await db
-    .update(schema.projects)
-    .set({
-      agentStatus: "selecting_action",
-      agentStatusDetail: "Choosing the highest-value SEO action",
-      updatedAt: new Date(),
-    })
-    .where(eq(schema.projects.id, projectId));
+  await setProjectAgentStatus(
+    projectId,
+    "selecting_action",
+    "Choosing the highest-value SEO action",
+  );
 
   const selection = await selectAction(projectId);
   const actionType = selection.selected.actionType;
@@ -442,9 +456,16 @@ export async function runActionCycle(projectId: string) {
     .set({ creditsReserved: true, status: "researching", updatedAt: new Date() })
     .where(eq(schema.seoActions.id, action.id));
 
+  await setProjectAgentStatus(projectId, "researching", "Researching the selected SEO action");
   const research = await runResearchStage(projectId, action.id, selection);
+
+  await setProjectAgentStatus(projectId, "briefing", "Preparing the content brief");
   const brief = await runBriefStage(projectId, action.id, selection, research);
+
+  await setProjectAgentStatus(projectId, "writing", "Writing repository changes");
   const draft = await runWriterStage(projectId, action.id, brief);
+
+  await setProjectAgentStatus(projectId, "validating", "Running quality gates");
   const review = await runReviewStage(projectId, action.id, draft);
 
   if (!review.passed || review.publishDecision === "reject") {
@@ -463,8 +484,20 @@ export async function runActionCycle(projectId: string) {
     return { status: "failed_review" as const, action, review };
   }
 
+  await setProjectAgentStatus(projectId, "creating_pr", "Opening pull request on GitHub");
   const pr = await executeAndOpenPr(projectId, action.id, selection, draft, review);
   return { status: "awaiting_approval" as const, action, pr, selection };
+}
+
+async function setProjectAgentStatus(
+  projectId: string,
+  agentStatus: string,
+  agentStatusDetail: string,
+) {
+  await db
+    .update(schema.projects)
+    .set({ agentStatus, agentStatusDetail, updatedAt: new Date() })
+    .where(eq(schema.projects.id, projectId));
 }
 
 async function runResearchStage(

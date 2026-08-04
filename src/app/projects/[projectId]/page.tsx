@@ -34,6 +34,7 @@ export default function ProjectPage() {
   const params = useParams<{ projectId: string }>();
   const [data, setData] = useState<ProjectPayload | null>(null);
   const [busy, setBusy] = useState(false);
+  const [forcePoll, setForcePoll] = useState(false);
 
   const refresh = useCallback(async () => {
     const res = await fetch(`/api/projects/${params.projectId}`);
@@ -52,25 +53,74 @@ export default function ProjectPage() {
     };
   }, [params.projectId]);
 
-  // Poll only while the agent is actively working
-  const working = isAgentWorking(data?.project?.agentStatus);
+  // Poll while working, or briefly after the user starts a cycle
+  const working = isAgentWorking(data?.project?.agentStatus) || forcePoll;
   useEffect(() => {
     if (!working) return;
     const interval = window.setInterval(() => {
       void refresh();
-    }, 4000);
+    }, 2500);
     return () => window.clearInterval(interval);
   }, [working, refresh]);
 
+  // Stop forced polling once the agent settles on a non-working status
+  useEffect(() => {
+    if (!forcePoll) return;
+    const status = data?.project?.agentStatus;
+    if (status && !isAgentWorking(status)) {
+      setForcePoll(false);
+    }
+  }, [data?.project?.agentStatus, forcePoll]);
+
+  // Safety: don't poll forever if the job never settles
+  useEffect(() => {
+    if (!forcePoll) return;
+    const timeout = window.setTimeout(() => setForcePoll(false), 180_000);
+    return () => window.clearTimeout(timeout);
+  }, [forcePoll]);
+
   async function runCycle() {
     setBusy(true);
+    setForcePoll(true);
+    // Optimistic UI so status updates immediately
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            project: {
+              ...prev.project,
+              agentStatus: "selecting_action",
+              agentStatusDetail: "Starting SEO action cycle…",
+            },
+          }
+        : prev,
+    );
     try {
-      await fetch(`/api/projects/${params.projectId}`, {
+      const res = await fetch(`/api/projects/${params.projectId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ runActionCycle: true }),
       });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setForcePoll(false);
+        throw new Error(body.error ?? "Failed to start SEO action");
+      }
       await refresh();
+    } catch (e) {
+      setForcePoll(false);
+      setData((prev) =>
+        prev
+          ? {
+              ...prev,
+              project: {
+                ...prev.project,
+                agentStatusDetail:
+                  e instanceof Error ? e.message : "Failed to start SEO action",
+              },
+            }
+          : prev,
+      );
     } finally {
       setBusy(false);
     }

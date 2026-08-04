@@ -111,6 +111,10 @@ export async function PATCH(request: Request, { params }: Params) {
       jobs.push({ name: "project.initialAudit", id: job.id });
     }
     if (body.runActionCycle) {
+      await updateProjectSettings(projectId, session.user.id, {
+        agentStatus: "selecting_action",
+        agentStatusDetail: "Starting SEO action cycle…",
+      });
       const job = await enqueueJob("seo.runActionCycle", { projectId });
       jobs.push({ name: "seo.runActionCycle", id: job.id });
     }
