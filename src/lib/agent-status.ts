@@ -77,15 +77,23 @@ export function agentStatusTone(status: string | null | undefined): AgentStatusT
 
 /**
  * Resolve a clear next action from status + detail text.
+ * When awaiting approval, prefer the GitHub PR / compare URL if available.
  */
 export function resolveAgentStatusCta(input: {
   status: string | null | undefined;
   detail?: string | null;
   projectId?: string;
+  /** GitHub PR html_url or compare/?quick_pull=1 URL */
+  reviewUrl?: string | null;
 }): AgentStatusCta | null {
   const status = input.status ?? "idle";
   const detail = (input.detail ?? "").toLowerCase();
   const projectHref = input.projectId ? `/projects/${input.projectId}` : "/dashboard";
+  const reviewUrl = input.reviewUrl?.trim() || null;
+  const isGithubReview =
+    reviewUrl != null &&
+    (reviewUrl.startsWith("https://github.com/") || reviewUrl.startsWith("http://github.com/")) &&
+    !reviewUrl.startsWith("dry-run://");
 
   if (status === "blocked") {
     if (
@@ -97,6 +105,9 @@ export function resolveAgentStatusCta(input: {
   }
 
   if (status === "awaiting_approval") {
+    if (isGithubReview) {
+      return { label: "Review pending update", href: reviewUrl };
+    }
     return { label: "Review pending update", href: projectHref };
   }
 
@@ -109,4 +120,8 @@ export function resolveAgentStatusCta(input: {
   }
 
   return null;
+}
+
+export function isExternalHref(href: string): boolean {
+  return /^https?:\/\//i.test(href);
 }

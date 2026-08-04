@@ -4,12 +4,14 @@ import { json, requireSession, handleRouteError } from "@/lib/api";
 import {
   deleteProject,
   getProjectForUser,
+  getProjectRepository,
   updateProjectSettings,
 } from "@/modules/projects/service";
 import { enqueueJob } from "@/modules/jobs/enqueue";
 import { confirmIntelligenceProfile, getLatestIntelligence } from "@/modules/intelligence/service";
 import { listAuditLogs } from "@/modules/audit-logs/service";
 import { getBillingState } from "@/modules/billing/service";
+import { resolveGithubReviewUrl } from "@/modules/github/client";
 import { db, schema } from "@/lib/db";
 
 type Params = { params: Promise<{ projectId: string }> };
@@ -21,7 +23,8 @@ export async function GET(_req: Request, { params }: Params) {
     const project = await getProjectForUser(projectId, session.user.id);
     if (!project) return json({ error: "Not found" }, 404);
 
-    const [intelligence, audit, roadmap, actions, logs, billing] = await Promise.all([
+    const [intelligence, audit, roadmap, actions, logs, billing, latestPullRequest, repository] =
+      await Promise.all([
       getLatestIntelligence(projectId),
       db.query.seoAudits.findFirst({
         where: eq(schema.seoAudits.projectId, projectId),
@@ -38,9 +41,41 @@ export async function GET(_req: Request, { params }: Params) {
       }),
       listAuditLogs(projectId, 30),
       getBillingState(project.workspaceId),
+      db.query.pullRequests.findFirst({
+        where: eq(schema.pullRequests.projectId, projectId),
+        orderBy: [desc(schema.pullRequests.createdAt)],
+      }),
+      getProjectRepository(projectId),
     ]);
 
-    return json({ project, intelligence, audit, roadmap, actions, logs, billing });
+    const reviewUrl = latestPullRequest
+      ? resolveGithubReviewUrl({
+          prUrl: latestPullRequest.prUrl,
+          owner: repository?.owner,
+          repo: repository?.name,
+          baseBranch: latestPullRequest.baseBranch,
+          branch: latestPullRequest.branch,
+        })
+      : null;
+
+    return json({
+      project,
+      intelligence,
+      audit,
+      roadmap,
+      actions,
+      logs,
+      billing,
+      latestPullRequest: latestPullRequest
+        ? {
+            id: latestPullRequest.id,
+            prNumber: latestPullRequest.prNumber,
+            prUrl: reviewUrl,
+            branch: latestPullRequest.branch,
+            mergeStatus: latestPullRequest.mergeStatus,
+          }
+        : null,
+    });
   } catch (error) {
     return handleRouteError(error);
   }

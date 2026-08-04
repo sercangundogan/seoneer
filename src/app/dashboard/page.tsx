@@ -7,7 +7,7 @@ import { listProjectsWithReposForUser } from "@/modules/projects/service";
 import { AppShell } from "@/components/dashboard/app-shell";
 import { AgentStatusPanel } from "@/components/dashboard/agent-status-panel";
 import { ProjectsList } from "@/components/dashboard/projects-list";
-import { resolveAgentStatusCta } from "@/lib/agent-status";
+import { isExternalHref, resolveAgentStatusCta } from "@/lib/agent-status";
 
 export default async function DashboardPage({
   searchParams,
@@ -32,7 +32,7 @@ export default async function DashboardPage({
   if (primary?.agentStatus === "awaiting_approval") {
     attention.push({
       text: primary.agentStatusDetail ?? "An SEO update is waiting for your approval.",
-      href: `/projects/${primary.id}`,
+      href: primary.latestReviewUrl ?? `/projects/${primary.id}`,
       cta: "Review update",
     });
   }
@@ -75,6 +75,7 @@ export default async function DashboardPage({
         status={primary?.agentStatus}
         detail={primary?.agentStatusDetail}
         projectId={primary?.id}
+        reviewUrl={primary?.latestReviewUrl}
       />
 
       <div className="mt-8 grid gap-8 lg:grid-cols-2">
@@ -93,12 +94,23 @@ export default async function DashboardPage({
                 >
                   <p>{item.text}</p>
                   {item.href && item.cta ? (
-                    <Link
-                      href={item.href}
-                      className="mt-3 inline-flex text-sm font-medium text-[var(--accent)] underline-offset-2 hover:underline"
-                    >
-                      {item.cta} →
-                    </Link>
+                    isExternalHref(item.href) ? (
+                      <a
+                        href={item.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 inline-flex text-sm font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+                      >
+                        {item.cta} →
+                      </a>
+                    ) : (
+                      <Link
+                        href={item.href}
+                        className="mt-3 inline-flex text-sm font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+                      >
+                        {item.cta} →
+                      </Link>
+                    )
                   ) : null}
                 </li>
               ))

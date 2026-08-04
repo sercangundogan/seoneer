@@ -3,6 +3,7 @@ import { db, schema } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { assertWorkspaceMember } from "@/modules/workspaces/service";
 import { writeAuditLog } from "@/modules/audit-logs/service";
+import { resolveGithubReviewUrl } from "@/modules/github/client";
 
 export async function findWorkspaceProjectByFullName(
   workspaceId: string,
@@ -134,25 +135,47 @@ export async function listProjectsForUser(userId: string) {
 
 export type ProjectListItem = Awaited<ReturnType<typeof listProjectsForUser>>[number] & {
   repository?: { fullName: string; htmlUrl: string } | null;
+  latestReviewUrl?: string | null;
 };
 
 export async function listProjectsWithReposForUser(userId: string): Promise<ProjectListItem[]> {
   const projects = await listProjectsForUser(userId);
   if (projects.length === 0) return [];
 
-  const repos = await db.query.projectRepositories.findMany({
-    where: inArray(
-      schema.projectRepositories.projectId,
-      projects.map((p) => p.id),
-    ),
-  });
+  const projectIds = projects.map((p) => p.id);
+  const [repos, openPrs] = await Promise.all([
+    db.query.projectRepositories.findMany({
+      where: inArray(schema.projectRepositories.projectId, projectIds),
+    }),
+    db.query.pullRequests.findMany({
+      where: inArray(schema.pullRequests.projectId, projectIds),
+      orderBy: [desc(schema.pullRequests.createdAt)],
+    }),
+  ]);
   const byProject = new Map(repos.map((r) => [r.projectId, r]));
+  const latestPrByProject = new Map<string, (typeof openPrs)[number]>();
+  for (const pr of openPrs) {
+    if (!latestPrByProject.has(pr.projectId)) {
+      latestPrByProject.set(pr.projectId, pr);
+    }
+  }
 
   return projects.map((p) => {
     const repo = byProject.get(p.id);
+    const latestPr = latestPrByProject.get(p.id);
+    const reviewUrl = latestPr
+      ? resolveGithubReviewUrl({
+          prUrl: latestPr.prUrl,
+          owner: repo?.owner,
+          repo: repo?.name,
+          baseBranch: latestPr.baseBranch,
+          branch: latestPr.branch,
+        })
+      : null;
     return {
       ...p,
       repository: repo ? { fullName: repo.fullName, htmlUrl: repo.htmlUrl } : null,
+      latestReviewUrl: reviewUrl,
     };
   });
 }

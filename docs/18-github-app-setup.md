@@ -102,6 +102,17 @@ pnpm dev
 
 Sign in → **Onboarding** → **Install GitHub App** → pick repos → continue.
 
+### Pull requests permission (required)
+
+If Seoneer pushes a branch but no PR appears, the app almost always lacks **Pull requests: Read and write**, or the installation has not accepted a permission update yet.
+
+1. GitHub → **Settings → Developer settings → GitHub Apps → Seoneer → Permissions**
+2. Set **Pull requests** to **Read and write** → **Save**
+3. Open the installation (user or org) and **Accept** the new permissions
+4. Re-run an SEO action in Seoneer
+
+Without this, Contents write can still create branches while `pulls.create` returns `Resource not accessible by integration`.
+
 ## Do not confuse with OAuth App
 
 | Variable | Purpose |

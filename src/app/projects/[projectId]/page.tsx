@@ -28,6 +28,13 @@ type ProjectPayload = {
   }[];
   logs?: { id: string; summary: string; createdAt: string; action: string }[];
   billing?: { entitlement?: { samplePrUsed: boolean }; credits?: { balance: number } | null };
+  latestPullRequest?: {
+    id: string;
+    prNumber: number | null;
+    prUrl: string | null;
+    branch: string;
+    mergeStatus: string;
+  } | null;
 };
 
 export default function ProjectPage() {
@@ -144,12 +151,14 @@ export default function ProjectPage() {
     );
   }
 
-  const { project, intelligence, audit, roadmap, actions, logs, billing } = data;
+  const { project, intelligence, audit, roadmap, actions, logs, billing, latestPullRequest } =
+    data;
   const blocked = project.agentStatus === "blocked";
   const cycleRunning =
     busy || forcePoll || isAgentWorking(project.agentStatus);
   const awaitingApproval = project.agentStatus === "awaiting_approval";
   const runDisabled = blocked || cycleRunning || awaitingApproval;
+  const reviewUrl = latestPullRequest?.prUrl ?? null;
 
   return (
     <AppShell title={project.name}>
@@ -158,6 +167,7 @@ export default function ProjectPage() {
         detail={project.agentStatusDetail}
         fallbackDetail={intelligence?.profile.decisionSummary}
         projectId={project.id}
+        reviewUrl={reviewUrl}
         actions={
           <>
             <Button variant="secondary" onClick={() => void connectGsc()} disabled={cycleRunning}>

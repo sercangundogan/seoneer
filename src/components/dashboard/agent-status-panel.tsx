@@ -5,6 +5,7 @@ import {
   agentStatusTone,
   formatAgentStatus,
   isAgentWorking,
+  isExternalHref,
   resolveAgentStatusCta,
 } from "@/lib/agent-status";
 
@@ -13,19 +14,22 @@ export function AgentStatusPanel({
   detail,
   fallbackDetail,
   projectId,
+  reviewUrl,
   actions,
 }: {
   status: string | null | undefined;
   detail?: string | null;
   fallbackDetail?: string;
   projectId?: string;
+  /** GitHub PR or compare URL for awaiting_approval CTA */
+  reviewUrl?: string | null;
   /** Optional extra actions (e.g. Run SEO action) rendered on the right */
   actions?: ReactNode;
 }) {
   const working = isAgentWorking(status);
   const tone = agentStatusTone(status);
   const label = formatAgentStatus(status);
-  const cta = resolveAgentStatusCta({ status, detail, projectId });
+  const cta = resolveAgentStatusCta({ status, detail, projectId, reviewUrl });
   const description =
     detail?.trim() ||
     fallbackDetail ||
@@ -76,9 +80,15 @@ export function AgentStatusPanel({
 
           {cta ? (
             <div className="animate-cta-in mt-5">
-              <Link href={cta.href}>
-                <Button type="button">{cta.label}</Button>
-              </Link>
+              {isExternalHref(cta.href) ? (
+                <a href={cta.href} target="_blank" rel="noopener noreferrer">
+                  <Button type="button">{cta.label}</Button>
+                </a>
+              ) : (
+                <Link href={cta.href}>
+                  <Button type="button">{cta.label}</Button>
+                </Link>
+              )}
             </div>
           ) : null}
         </div>
