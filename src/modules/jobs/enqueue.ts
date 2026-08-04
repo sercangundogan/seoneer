@@ -1,7 +1,9 @@
 /**
  * Job enqueue helpers.
- * When TRIGGER_SECRET_KEY is unset, runs handlers in-process (dev/test).
+ * Long work must not block the HTTP response (Vercel timeout).
+ * Prefer Trigger.dev when configured; otherwise schedule with Next.js `after()`.
  */
+import { nanoid } from "nanoid";
 import { env } from "@/lib/env";
 
 export type JobName =
@@ -23,14 +25,25 @@ export async function enqueueJob<T extends JobName>(
   name: T,
   payload: JobPayloads[T],
 ): Promise<{ id: string; mode: "trigger" | "inline" }> {
-  if (!env.TRIGGER_SECRET_KEY) {
-    const { runJobInline } = await import("@/modules/jobs/runners");
-    const result = await runJobInline(name, payload);
-    return { id: result.id, mode: "inline" };
+  if (env.TRIGGER_SECRET_KEY) {
+    try {
+      const { tasks } = await import("@trigger.dev/sdk");
+      const handle = await tasks.trigger(name, payload);
+      return { id: handle.id, mode: "trigger" };
+    } catch (error) {
+      console.error("Trigger.dev enqueue failed; falling back to after()", error);
+    }
   }
 
-  // Trigger.dev path — dynamic import to keep local builds simple
-  const { tasks } = await import("@trigger.dev/sdk");
-  const handle = await tasks.trigger(name, payload);
-  return { id: handle.id, mode: "trigger" };
+  const id = nanoid();
+  const { after } = await import("next/server");
+  after(async () => {
+    try {
+      const { runJobInline } = await import("@/modules/jobs/runners");
+      await runJobInline(name, payload as Record<string, unknown>);
+    } catch (error) {
+      console.error(`Background job failed: ${name}`, error);
+    }
+  });
+  return { id, mode: "inline" };
 }

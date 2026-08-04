@@ -41,6 +41,7 @@ export default function OnboardingFlow() {
   const [mode, setMode] = useState<(typeof MODES)[number]["id"]>("review_all");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [analysisStatus, setAnalysisStatus] = useState("");
 
   const selectedInstallationMeta = useMemo(
     () => installations.find((i) => i.id === selectedInstallation),
@@ -156,8 +157,10 @@ export default function OnboardingFlow() {
   }
 
   async function createProject() {
-    if (!selectedRepo || !selectedInstallation) return;
+    if (!selectedRepo || !selectedInstallation || busy) return;
     setBusy(true);
+    setMessage("");
+    setAnalysisStatus("Creating project…");
     try {
       const res = await fetch("/api/projects", {
         method: "POST",
@@ -173,28 +176,57 @@ export default function OnboardingFlow() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Failed");
-      setProjectId(data.project.id);
+      if (!res.ok) throw new Error(data.error ?? "Failed to create project");
+
+      const id = data.project.id as string;
+      setProjectId(id);
       setProductName(selectedRepo.name);
-      await fetch(`/api/projects/${data.project.id}`, {
+
+      setAnalysisStatus("Starting repository analysis…");
+      const start = await fetch(`/api/projects/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ startAnalysis: true }),
       });
-      for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 500));
-        const detail = await fetch(`/api/projects/${data.project.id}`);
+      const startBody = await start.json();
+      if (!start.ok) {
+        throw new Error(startBody.error ?? "Failed to start analysis");
+      }
+
+      // Poll every 2s (not 0.5s) until profile is ready or analysis errors
+      const maxAttempts = 45;
+      for (let i = 0; i < maxAttempts; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const detail = await fetch(`/api/projects/${id}`);
         const body = await detail.json();
-        if (body.intelligence?.profile) {
-          setSummary(body.intelligence.profile.product.summary ?? "");
-          setProductName(body.intelligence.profile.product.name ?? selectedRepo.name);
+        if (!detail.ok) {
+          throw new Error(body.error ?? "Failed to load analysis status");
+        }
+
+        const status = body.project?.agentStatus as string | undefined;
+        const detailText = body.project?.agentStatusDetail as string | undefined;
+        setAnalysisStatus(detailText || status || "Analysing repository…");
+
+        if (status === "error") {
+          throw new Error(detailText || "Repository analysis failed");
+        }
+
+        const profile = body.intelligence?.profile;
+        if (profile) {
+          setSummary(profile.product?.summary ?? "");
+          setProductName(profile.product?.name ?? selectedRepo.name);
+          setAnalysisStatus("");
           setStep(3);
-          break;
+          return;
         }
       }
-      setStep(3);
+
+      throw new Error(
+        "Analysis is taking longer than expected. Open Overview later, or go back and try again.",
+      );
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Error");
+      setAnalysisStatus("");
     } finally {
       setBusy(false);
     }
@@ -292,7 +324,8 @@ export default function OnboardingFlow() {
                 <li key={repo.fullName}>
                   <button
                     type="button"
-                    className={`w-full rounded-[var(--radius)] border px-4 py-3 text-left text-sm ${
+                    disabled={busy}
+                    className={`w-full rounded-[var(--radius)] border px-4 py-3 text-left text-sm disabled:opacity-50 ${
                       selectedRepo?.fullName === repo.fullName
                         ? "border-[var(--accent)] bg-[var(--bg-elevated)]"
                         : "border-[var(--border)]"
@@ -305,6 +338,9 @@ export default function OnboardingFlow() {
               ))}
             </ul>
           )}
+          {analysisStatus ? (
+            <p className="animate-status text-sm text-[var(--accent)]">{analysisStatus}</p>
+          ) : null}
           <div className="flex flex-wrap gap-2">
             <Button
               type="button"
@@ -312,6 +348,7 @@ export default function OnboardingFlow() {
               disabled={busy}
               onClick={() => {
                 setMessage("");
+                setAnalysisStatus("");
                 setSelectedRepo(null);
                 setRepos([]);
                 setStep(1);
@@ -324,7 +361,7 @@ export default function OnboardingFlow() {
               onClick={() => void createProject()}
               disabled={!selectedRepo || busy}
             >
-              Analyse repository
+              {busy ? "Analysing…" : "Analyse repository"}
             </Button>
           </div>
         </section>
@@ -332,15 +369,24 @@ export default function OnboardingFlow() {
 
       {step === 3 ? (
         <section className="max-w-xl space-y-3">
+          <p className="text-sm text-[var(--fg-muted)]">
+            Review the generated product summary. Edit anything that looks wrong before continuing.
+          </p>
           <label className="text-sm">Product name</label>
           <Input value={productName} onChange={(e) => setProductName(e.target.value)} />
           <label className="text-sm">Product summary</label>
           <Textarea rows={5} value={summary} onChange={(e) => setSummary(e.target.value)} />
+          {!summary.trim() ? (
+            <p className="text-sm text-[var(--warning)]">
+              Summary is empty — analysis may have returned little signal. Add a short description of
+              what the product does.
+            </p>
+          ) : null}
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="secondary" onClick={() => setStep(2)}>
               Back
             </Button>
-            <Button type="button" onClick={() => setStep(4)}>
+            <Button type="button" onClick={() => setStep(4)} disabled={!productName.trim()}>
               Confirm summary
             </Button>
           </div>

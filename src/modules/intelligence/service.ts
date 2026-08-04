@@ -118,14 +118,23 @@ export async function buildIntelligenceProfile(projectId: string): Promise<{
 
     return { profile, version, agentRunId: run.id };
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
     await db
       .update(schema.agentRuns)
       .set({
         status: "failed",
-        decisionSummary: error instanceof Error ? error.message : "Unknown error",
+        decisionSummary: message,
         durationMs: Date.now() - started,
       })
       .where(eq(schema.agentRuns.id, run.id));
+    await db
+      .update(schema.projects)
+      .set({
+        agentStatus: "error",
+        agentStatusDetail: `Analysis failed: ${message}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.projects.id, projectId));
     throw error;
   }
 }
