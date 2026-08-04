@@ -28,10 +28,12 @@ Architectural deliverables live in [`docs/`](./docs/):
 
 ## Local development
 
+Use **Supabase Postgres** for the database. See [docs/16-supabase-setup.md](./docs/16-supabase-setup.md).
+
 ```bash
 pnpm install
 cp .env.example .env
-# Start PostgreSQL and set DATABASE_URL
+# Fill DATABASE_URL + DIRECT_URL from Supabase
 pnpm db:push
 pnpm dev
 ```
@@ -42,5 +44,6 @@ Scripts:
 - `pnpm lint`
 - `pnpm test`
 - `pnpm build`
+- `pnpm db:push`
 
 Without AI/GitHub/GSC credentials, agents fall back to heuristics and PR creation dry-runs so the workflow can be exercised locally.

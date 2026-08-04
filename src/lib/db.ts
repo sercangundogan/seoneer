@@ -6,7 +6,14 @@ import { env } from "./env";
 const globalForDb = globalThis as unknown as { conn?: ReturnType<typeof postgres> };
 
 function createClient() {
-  return postgres(env.DATABASE_URL, { prepare: false, max: 10 });
+  const isLocal =
+    env.DATABASE_URL.includes("localhost") || env.DATABASE_URL.includes("127.0.0.1");
+
+  return postgres(env.DATABASE_URL, {
+    prepare: false, // required for Supabase transaction pooler / PgBouncer
+    max: 10,
+    ssl: isLocal ? false : "require",
+  });
 }
 
 export const conn = globalForDb.conn ?? createClient();
