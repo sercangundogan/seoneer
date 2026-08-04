@@ -53,20 +53,27 @@ export async function buildIntelligenceProfile(projectId: string): Promise<{
 
   try {
     if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
-      const result = await generateStructured({
-        tier: "strong",
-        system: PROJECT_ANALYST_PROMPT,
-        prompt: JSON.stringify({
-          projectName: project.name,
-          directoryMap: summary.directoryMap,
-          detected: summary.detected,
-          files: summary.files,
-        }),
-        schema: projectIntelligenceProfileSchema,
-      });
-      profile = result.object;
-      model = result.model;
-      cost = result.estimatedCostUsd;
+      try {
+        const result = await generateStructured({
+          tier: "strong",
+          system: PROJECT_ANALYST_PROMPT,
+          prompt: JSON.stringify({
+            projectName: project.name,
+            directoryMap: summary.directoryMap,
+            detected: summary.detected,
+            files: summary.files,
+          }),
+          schema: projectIntelligenceProfileSchema,
+        });
+        profile = result.object;
+        model = result.model;
+        cost = result.estimatedCostUsd;
+      } catch (aiError) {
+        // Don't block onboarding if the provider/model fails — heuristic still usable.
+        console.error("Intelligence AI failed; using heuristic profile", aiError);
+        profile = buildHeuristicIntelligence(summary, project.name);
+        model = "heuristic_fallback";
+      }
     } else {
       profile = buildHeuristicIntelligence(summary, project.name);
     }
