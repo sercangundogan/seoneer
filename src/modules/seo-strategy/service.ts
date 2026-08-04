@@ -1,0 +1,1037 @@
+import { and, desc, eq, ne } from "drizzle-orm";
+import { db, schema } from "@/lib/db";
+import { generateStructured } from "@/lib/ai";
+import { env } from "@/lib/env";
+import { writeAuditLog } from "@/modules/audit-logs/service";
+import { canStartActionCycle, markFreeEntitlement, reserveCredits } from "@/modules/billing/service";
+import { getLatestIntelligence } from "@/modules/intelligence/service";
+import type { ProjectIntelligenceProfile } from "@/modules/intelligence/schemas";
+import {
+  ACTION_SELECTOR_PROMPT,
+  CREDIT_WEIGHTS,
+  actionSelectionSchema,
+  contentBriefSchema,
+  researchResultSchema,
+  reviewOutputSchema,
+  writerOutputSchema,
+  type ActionSelection,
+  type SeoActionType,
+} from "@/modules/seo-strategy/schemas";
+import type { z } from "zod";
+import {
+  gatesPassed,
+  runContentQualityGates,
+} from "@/modules/technical-seo/quality-gates";
+import {
+  classifyPath,
+  SAFE_AUTO_MERGE_ACTIONS,
+} from "@/modules/github/path-policy";
+import {
+  createBranchCommitAndPr,
+  mergePullRequest,
+} from "@/modules/github/client";
+import {
+  getInstallationForProject,
+  getProjectRepository,
+} from "@/modules/projects/service";
+import { createApprovalToken, buildApprovalUrl } from "@/modules/pull-requests/approvals";
+import { sendPrReadyEmail } from "@/modules/notifications/service";
+import { recommendCadence } from "@/modules/seo-strategy/cadence";
+
+export async function runInitialAudit(projectId: string) {
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, projectId),
+  });
+  if (!project) throw new Error("Project not found");
+
+  const intelligence = await getLatestIntelligence(projectId);
+  const profile = intelligence?.profile as ProjectIntelligenceProfile | undefined;
+
+  const gsc = await db.query.gscConnections.findFirst({
+    where: eq(schema.gscConnections.projectId, projectId),
+  });
+  let snapshot = null;
+  if (gsc) {
+    snapshot = await db.query.gscSnapshots.findFirst({
+      where: eq(schema.gscSnapshots.connectionId, gsc.id),
+      orderBy: [desc(schema.gscSnapshots.fetchedAt)],
+    });
+  }
+
+  const findings = {
+    technical: profile?.seo.issues ?? [],
+    opportunities: profile?.seo.opportunities ?? [],
+    gscConnected: Boolean(gsc),
+    topQueries: (snapshot?.queryRows as unknown[])?.slice(0, 20) ?? [],
+    keywordOpportunities: deriveKeywordOpportunities(snapshot?.queryRows),
+  };
+
+  const [audit] = await db
+    .insert(schema.seoAudits)
+    .values({ projectId, status: "completed", findings })
+    .returning();
+
+  for (const kw of findings.keywordOpportunities.slice(0, 20)) {
+    await db.insert(schema.keywordOpportunities).values({
+      projectId,
+      query: kw.query,
+      metrics: kw.metrics,
+      score: String(kw.score),
+    });
+  }
+
+  const roadmapItems = buildRoadmapItems(profile, findings);
+  await db.insert(schema.seoRoadmaps).values({
+    projectId,
+    items: roadmapItems,
+  });
+
+  const cadence = recommendCadence({
+    blogExists: profile?.website.blogExists ?? false,
+    gscConnected: Boolean(gsc),
+    issueCount: findings.technical.length,
+    opportunityCount: findings.opportunities.length,
+    plan: "free",
+  });
+
+  await db
+    .update(schema.projects)
+    .set({
+      recommendedCadence: cadence,
+      status: "active",
+      agentStatus: "idle",
+      agentStatusDetail: "Initial audit complete",
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.projects.id, projectId));
+
+  await markFreeEntitlement(project.workspaceId, "initialAuditUsed");
+  await writeAuditLog({
+    workspaceId: project.workspaceId,
+    projectId,
+    action: "audit.completed",
+    summary: "Initial SEO audit and roadmap generated",
+    evidence: { auditId: audit.id },
+  });
+
+  return { audit, roadmapItems, cadence };
+}
+
+function deriveKeywordOpportunities(queryRows: unknown): {
+  query: string;
+  metrics: Record<string, number>;
+  score: number;
+}[] {
+  if (!Array.isArray(queryRows)) return [];
+  return queryRows
+    .map((row) => {
+      const r = row as Record<string, unknown>;
+      const query = String(r.keys ?? r.query ?? "");
+      const clicks = Number(r.clicks ?? 0);
+      const impressions = Number(r.impressions ?? 0);
+      const position = Number(r.position ?? 50);
+      const ctr = Number(r.ctr ?? (impressions ? clicks / impressions : 0));
+      let score = 0;
+      if (position >= 8 && position <= 20) score += 40;
+      if (impressions > 50 && ctr < 0.05) score += 30;
+      if (clicks > 0) score += 10;
+      return { query, metrics: { clicks, impressions, position, ctr }, score };
+    })
+    .filter((x) => x.query)
+    .sort((a, b) => b.score - a.score);
+}
+
+function buildRoadmapItems(
+  profile: ProjectIntelligenceProfile | undefined,
+  findings: { technical: string[]; opportunities: string[]; gscConnected: boolean },
+) {
+  const items: { priority: number; actionType: string; title: string; reason: string }[] = [];
+  let p = 1;
+  for (const issue of findings.technical) {
+    items.push({
+      priority: p++,
+      actionType: issue.toLowerCase().includes("blog")
+        ? "BUILD_BLOG_FOUNDATION"
+        : "FIX_TECHNICAL_SEO",
+      title: issue,
+      reason: "Detected during repository analysis",
+    });
+  }
+  for (const opp of findings.opportunities) {
+    items.push({
+      priority: p++,
+      actionType: "UPDATE_ARTICLE",
+      title: opp,
+      reason: "Content opportunity from intelligence profile",
+    });
+  }
+  if (!findings.gscConnected) {
+    items.push({
+      priority: p++,
+      actionType: "WAIT_FOR_MORE_DATA",
+      title: "Connect Google Search Console",
+      reason: "Performance data improves action selection confidence",
+    });
+  }
+  if (!profile?.website.blogExists) {
+    items.unshift({
+      priority: 1,
+      actionType: "BUILD_BLOG_FOUNDATION",
+      title: "Establish blog foundation",
+      reason: "No blog architecture detected",
+    });
+  }
+  return items;
+}
+
+export async function selectAction(projectId: string): Promise<ActionSelection> {
+  const intelligence = await getLatestIntelligence(projectId);
+  const audit = await db.query.seoAudits.findFirst({
+    where: eq(schema.seoAudits.projectId, projectId),
+    orderBy: [desc(schema.seoAudits.createdAt)],
+  });
+  const keywords = await db.query.keywordOpportunities.findMany({
+    where: eq(schema.keywordOpportunities.projectId, projectId),
+    limit: 20,
+  });
+  const previous = await db.query.seoActions.findMany({
+    where: eq(schema.seoActions.projectId, projectId),
+    orderBy: [desc(schema.seoActions.createdAt)],
+    limit: 10,
+  });
+
+  if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
+    const result = await generateStructured({
+      tier: "strong",
+      system: ACTION_SELECTOR_PROMPT,
+      prompt: JSON.stringify({
+        profile: intelligence?.profile,
+        audit: audit?.findings,
+        keywords,
+        previousActions: previous.map((a) => ({
+          type: a.actionType,
+          status: a.status,
+          summary: a.decisionSummary,
+        })),
+      }),
+      schema: actionSelectionSchema,
+    });
+    return result.object;
+  }
+
+  return heuristicSelectAction(intelligence?.profile as ProjectIntelligenceProfile | undefined, audit?.findings);
+}
+
+function heuristicSelectAction(
+  profile: ProjectIntelligenceProfile | undefined,
+  findings: unknown,
+): ActionSelection {
+  const f = (findings ?? {}) as {
+    technical?: string[];
+    gscConnected?: boolean;
+    keywordOpportunities?: { query: string; score: number }[];
+  };
+
+  if (!profile?.website.blogExists) {
+    return {
+      candidates: [
+        { actionType: "BUILD_BLOG_FOUNDATION", score: 88, rationale: "No blog detected" },
+        { actionType: "NO_ACTION", score: 10, rationale: "Idle" },
+      ],
+      selected: {
+        actionType: "BUILD_BLOG_FOUNDATION",
+        target: "content/blog",
+        primaryQueryOrIssue: "Missing blog foundation",
+        whyNow: "Cannot publish sustainable content without a blog structure",
+        evidence: ["website.blogExists=false"],
+        expectedUserValue: "Readable, indexable articles in a clear structure",
+        expectedBusinessValue: "Enables future high-value content actions",
+        requiredRepositoryChanges: ["Add MDX blog route and sample layout"],
+        requiredResearch: [],
+        risks: ["Touches app routing — human review mandatory"],
+        confidence: 0.75,
+        qualityGates: ["build", "path_policy"],
+        estimatedCreditCost: CREDIT_WEIGHTS.BUILD_BLOG_FOUNDATION,
+        humanReviewMandatory: true,
+      },
+      decisionSummary:
+        "Selected BUILD_BLOG_FOUNDATION because no blog architecture was detected.",
+    };
+  }
+
+  if (!f.gscConnected) {
+    return {
+      candidates: [
+        {
+          actionType: "WAIT_FOR_MORE_DATA",
+          score: 70,
+          rationale: "GSC missing",
+        },
+        {
+          actionType: "FIX_TECHNICAL_SEO",
+          score: 55,
+          rationale: "Can still fix foundations",
+        },
+      ],
+      selected: {
+        actionType: (f.technical?.length ? "FIX_TECHNICAL_SEO" : "WAIT_FOR_MORE_DATA") as SeoActionType,
+        target: f.technical?.[0] ?? "gsc",
+        primaryQueryOrIssue: f.technical?.[0] ?? "Insufficient Search Console data",
+        whyNow: f.technical?.length
+          ? "Technical foundations are missing"
+          : "Need Search Console data before high-confidence content actions",
+        evidence: [`gscConnected=${Boolean(f.gscConnected)}`],
+        expectedUserValue: "Clearer indexing and crawl signals",
+        expectedBusinessValue: "Safer future content investment",
+        requiredRepositoryChanges: f.technical?.length ? ["Update sitemap/robots/metadata"] : [],
+        requiredResearch: [],
+        risks: ["Low traffic signal confidence"],
+        confidence: 0.6,
+        qualityGates: ["metadata", "build"],
+        estimatedCreditCost: f.technical?.length ? 2 : 0,
+        humanReviewMandatory: true,
+      },
+      decisionSummary: f.technical?.length
+        ? "Selected FIX_TECHNICAL_SEO based on detected foundation gaps."
+        : "Selected WAIT_FOR_MORE_DATA until Search Console is connected.",
+    };
+  }
+
+  const topKw = f.keywordOpportunities?.[0];
+  return {
+    candidates: [
+      {
+        actionType: "IMPROVE_TITLE_DESCRIPTION",
+        score: 72,
+        rationale: "Low-risk CTR improvement",
+      },
+      { actionType: "UPDATE_ARTICLE", score: 65, rationale: "Existing page improvement" },
+    ],
+    selected: {
+      actionType: "IMPROVE_TITLE_DESCRIPTION",
+      target: profile.website.contentPages[0] ?? "blog",
+      primaryQueryOrIssue: topKw?.query ?? "Low CTR pages",
+      whyNow: "Improving titles/descriptions is safer than publishing new content without strong evidence",
+      evidence: topKw ? [`gsc query: ${topKw.query}`] : ["content pages present"],
+      expectedUserValue: "Clearer snippets in search results",
+      expectedBusinessValue: "Potential CTR lift on existing impressions",
+      requiredRepositoryChanges: ["Update frontmatter title/description"],
+      requiredResearch: ["Confirm current metadata"],
+      risks: ["Title changes need brand tone check"],
+      confidence: 0.68,
+      qualityGates: ["metadata", "brand_tone"],
+      estimatedCreditCost: 1,
+      humanReviewMandatory: false,
+    },
+    decisionSummary:
+      "Selected IMPROVE_TITLE_DESCRIPTION as the highest-value safe action over creating a new article.",
+  };
+}
+
+export async function runActionCycle(projectId: string) {
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, projectId),
+  });
+  if (!project) throw new Error("Project not found");
+
+  const active = await db.query.seoActions.findFirst({
+    where: and(
+      eq(schema.seoActions.projectId, projectId),
+      ne(schema.seoActions.status, "merged"),
+      ne(schema.seoActions.status, "failed"),
+      ne(schema.seoActions.status, "skipped"),
+      ne(schema.seoActions.status, "cancelled"),
+    ),
+  });
+  if (active && !["awaiting_approval"].includes(active.status)) {
+    throw new Error("An SEO action cycle is already in progress for this project");
+  }
+
+  const billing = await canStartActionCycle(project.workspaceId);
+  if (!billing.ok) {
+    await db
+      .update(schema.projects)
+      .set({
+        agentStatus: "blocked",
+        agentStatusDetail: billing.reason,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.projects.id, projectId));
+    return { status: "blocked" as const, reason: billing.reason };
+  }
+
+  await db
+    .update(schema.projects)
+    .set({
+      agentStatus: "selecting_action",
+      agentStatusDetail: "Choosing the highest-value SEO action",
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.projects.id, projectId));
+
+  const selection = await selectAction(projectId);
+  const actionType = selection.selected.actionType;
+
+  const [action] = await db
+    .insert(schema.seoActions)
+    .values({
+      projectId,
+      actionType,
+      status: "queued",
+      selection,
+      creditCost: selection.selected.estimatedCreditCost,
+      humanReviewMandatory: selection.selected.humanReviewMandatory,
+      decisionSummary: selection.decisionSummary,
+    })
+    .returning();
+
+  await db.insert(schema.agentRuns).values({
+    seoActionId: action.id,
+    projectId,
+    stage: "seo_strategist",
+    status: "succeeded",
+    input: {},
+    output: selection,
+    decisionSummary: selection.decisionSummary,
+    confidence: String(selection.selected.confidence),
+    model: env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY ? "configured" : "heuristic",
+  });
+
+  if (
+    actionType === "NO_ACTION" ||
+    actionType === "WAIT_FOR_MORE_DATA" ||
+    actionType === "REQUEST_PRODUCT_INFORMATION"
+  ) {
+    await db
+      .update(schema.seoActions)
+      .set({ status: "skipped", updatedAt: new Date() })
+      .where(eq(schema.seoActions.id, action.id));
+    await db
+      .update(schema.projects)
+      .set({
+        agentStatus: actionType === "REQUEST_PRODUCT_INFORMATION" ? "needs_input" : "idle",
+        agentStatusDetail: selection.decisionSummary,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.projects.id, projectId));
+    await writeAuditLog({
+      workspaceId: project.workspaceId,
+      projectId,
+      action: "seo_action.skipped",
+      entityType: "seo_action",
+      entityId: action.id,
+      summary: selection.decisionSummary,
+    });
+    return { status: "skipped" as const, action, selection };
+  }
+
+  await reserveCredits({
+    workspaceId: project.workspaceId,
+    projectId,
+    seoActionId: action.id,
+    amount: Math.max(selection.selected.estimatedCreditCost, 1),
+    useFreeSample: billing.useFreeSample,
+  });
+  await db
+    .update(schema.seoActions)
+    .set({ creditsReserved: true, status: "researching", updatedAt: new Date() })
+    .where(eq(schema.seoActions.id, action.id));
+
+  const research = await runResearchStage(projectId, action.id, selection);
+  const brief = await runBriefStage(projectId, action.id, selection, research);
+  const draft = await runWriterStage(projectId, action.id, brief);
+  const review = await runReviewStage(projectId, action.id, draft);
+
+  if (!review.passed || review.publishDecision === "reject") {
+    await db
+      .update(schema.seoActions)
+      .set({ status: "failed", updatedAt: new Date() })
+      .where(eq(schema.seoActions.id, action.id));
+    await db
+      .update(schema.projects)
+      .set({
+        agentStatus: "idle",
+        agentStatusDetail: review.decisionSummary,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.projects.id, projectId));
+    return { status: "failed_review" as const, action, review };
+  }
+
+  const pr = await executeAndOpenPr(projectId, action.id, selection, draft, review);
+  return { status: "awaiting_approval" as const, action, pr, selection };
+}
+
+async function runResearchStage(
+  projectId: string,
+  seoActionId: string,
+  selection: ActionSelection,
+) {
+  const started = Date.now();
+  const research = {
+    sources: [] as { url: string; title: string; reliability: "high" | "medium" | "low"; notes: string }[],
+    searchIntent: selection.selected.primaryQueryOrIssue,
+    audienceNeeds: ["Clear, accurate guidance"],
+    productAngles: [selection.selected.expectedUserValue],
+    claimsNeedingVerification: [],
+    competitorsCovered: [],
+    gaps: selection.selected.requiredResearch,
+    doNotClaim: ["Unverified statistics", "Fabricated customer quotes"],
+    confidence: selection.selected.confidence,
+    decisionSummary: `Research scoped for ${selection.selected.actionType}`,
+  };
+
+  if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
+    try {
+      const result = await generateStructured({
+        tier: "mid",
+        system:
+          "You are the Researcher agent. Return structured JSON only. Do not invent sources.",
+        prompt: JSON.stringify({ selection }),
+        schema: researchResultSchema,
+      });
+      Object.assign(research, result.object);
+    } catch {
+      // keep heuristic
+    }
+  }
+
+  await db.insert(schema.agentRuns).values({
+    seoActionId,
+    projectId,
+    stage: "researcher",
+    status: "succeeded",
+    input: { selection: selection.selected },
+    output: research,
+    decisionSummary: research.decisionSummary,
+    confidence: String(research.confidence),
+    durationMs: Date.now() - started,
+    model: "researcher",
+  });
+  return research;
+}
+
+async function runBriefStage(
+  projectId: string,
+  seoActionId: string,
+  selection: ActionSelection,
+  research: unknown,
+) {
+  await db
+    .update(schema.seoActions)
+    .set({ status: "briefing", updatedAt: new Date() })
+    .where(eq(schema.seoActions.id, seoActionId));
+
+  const intelligence = await getLatestIntelligence(projectId);
+  const profile = intelligence?.profile as ProjectIntelligenceProfile | undefined;
+  const blogDir = profile?.website.blogDirectory ?? "content/blog";
+
+  let brief: z.infer<typeof contentBriefSchema> = {
+    actionType: selection.selected.actionType,
+    workingTitle: selection.selected.target,
+    slug: selection.selected.target
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "")
+      .slice(0, 60),
+    searchIntent: selection.selected.primaryQueryOrIssue,
+    outline: [
+      {
+        heading: "Overview",
+        purpose: "Set context",
+        mustInclude: ["Product-relevant framing"],
+        mustAvoid: ["Fabricated claims"],
+      },
+    ],
+    internalLinks: [],
+    metadata: {
+      title: `${selection.selected.target} | Seoneer update`,
+      description: selection.selected.expectedUserValue.slice(0, 155),
+    },
+    structuredDataPlan: {},
+    originalValueThesis: selection.selected.expectedUserValue,
+    verificationChecklist: ["No fabricated stats"],
+    acceptanceCriteria: selection.selected.qualityGates,
+    decisionSummary: `Brief prepared for ${selection.selected.actionType}`,
+  };
+
+  if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
+    try {
+      const result = await generateStructured({
+        tier: "mid",
+        system: "You are the Content Architect. Return a detailed brief as JSON only.",
+        prompt: JSON.stringify({ selection, research, blogDir }),
+        schema: contentBriefSchema,
+      });
+      brief = result.object;
+    } catch {
+      // heuristic brief
+    }
+  }
+
+  await db
+    .update(schema.seoActions)
+    .set({ brief, updatedAt: new Date() })
+    .where(eq(schema.seoActions.id, seoActionId));
+
+  await db.insert(schema.agentRuns).values({
+    seoActionId,
+    projectId,
+    stage: "content_architect",
+    status: "succeeded",
+    input: { selection: selection.selected },
+    output: brief,
+    decisionSummary: brief.decisionSummary,
+  });
+
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, projectId),
+  });
+  if (project) await markFreeEntitlement(project.workspaceId, "briefUsed");
+
+  return brief;
+}
+
+async function runWriterStage(
+  projectId: string,
+  seoActionId: string,
+  brief: z.infer<typeof contentBriefSchema>,
+) {
+  await db
+    .update(schema.seoActions)
+    .set({ status: "executing", updatedAt: new Date() })
+    .where(eq(schema.seoActions.id, seoActionId));
+
+  const intelligence = await getLatestIntelligence(projectId);
+  const profile = intelligence?.profile as ProjectIntelligenceProfile | undefined;
+  const blogDir = profile?.website.blogDirectory ?? "content/blog";
+
+  let draft: z.infer<typeof writerOutputSchema> = {
+    format: "mdx",
+    files: [
+      {
+        path: `${blogDir}/${brief.slug || "seoneer-update"}.mdx`,
+        operation: "create",
+        content: `---
+title: ${brief.metadata.title}
+description: ${brief.metadata.description}
+---
+
+# ${brief.workingTitle}
+
+${brief.originalValueThesis}
+
+This update was prepared by Seoneer as a reviewable repository change. Claims are limited to verified product context.
+`,
+      },
+    ],
+    claims: [
+      {
+        text: brief.originalValueThesis,
+        status: "qualified",
+        evidence: "Derived from project intelligence and selected action rationale",
+      },
+    ],
+    decisionSummary: `Drafted files for ${brief.actionType}`,
+  };
+
+  if (brief.actionType === "BUILD_BLOG_FOUNDATION") {
+    draft.files = [
+      {
+        path: "content/blog/.gitkeep",
+        operation: "create",
+        content: "",
+      },
+      {
+        path: "content/blog/hello-seoneer.mdx",
+        operation: "create",
+        content: `---
+title: Hello from your SEO engineer
+description: Starter post establishing the blog foundation for organic growth.
+---
+
+# Hello from your SEO engineer
+
+This post establishes a safe Markdown/MDX content location for future SEO work.
+`,
+      },
+    ];
+  }
+
+  if (brief.actionType === "UPDATE_SITEMAP" || brief.actionType === "FIX_TECHNICAL_SEO") {
+    draft.format = "patch-plan";
+    draft.files = [
+      {
+        path: "src/app/sitemap.ts",
+        operation: "create",
+        content: `import type { MetadataRoute } from "next";
+
+export default function sitemap(): MetadataRoute.Sitemap {
+  const base = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  return [{ url: base, lastModified: new Date() }];
+}
+`,
+      },
+      {
+        path: "src/app/robots.ts",
+        operation: "create",
+        content: `import type { MetadataRoute } from "next";
+
+export default function robots(): MetadataRoute.Robots {
+  const base = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  return { rules: { userAgent: "*", allow: "/" }, sitemap: \`\${base}/sitemap.xml\` };
+}
+`,
+      },
+    ];
+  }
+
+  if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
+    try {
+      const result = await generateStructured({
+        tier: "strong",
+        system:
+          "You are the Writer agent. Produce file changes only. Never fabricate statistics, quotes, customers, or product capabilities.",
+        prompt: JSON.stringify({ brief, profile }),
+        schema: writerOutputSchema,
+      });
+      draft = result.object;
+    } catch {
+      // keep heuristic draft
+    }
+  }
+
+  await db.insert(schema.agentRuns).values({
+    seoActionId,
+    projectId,
+    stage: "writer",
+    status: "succeeded",
+    input: { brief },
+    output: draft,
+    decisionSummary: draft.decisionSummary,
+  });
+  return draft;
+}
+
+async function runReviewStage(
+  projectId: string,
+  seoActionId: string,
+  draft: { files: { path: string; content: string }[]; decisionSummary: string },
+) {
+  await db
+    .update(schema.seoActions)
+    .set({ status: "validating", updatedAt: new Date() })
+    .where(eq(schema.seoActions.id, seoActionId));
+
+  const intelligence = await getLatestIntelligence(projectId);
+  const profile = intelligence?.profile as ProjectIntelligenceProfile | undefined;
+  const gates = runContentQualityGates({
+    files: draft.files,
+    productName: profile?.product.name,
+  });
+
+  for (const file of draft.files) {
+    const classification = classifyPath(file.path, profile?.codeSafety);
+    if (classification === "protected") {
+      gates.push({
+        id: `path:${file.path}`,
+        status: "fail",
+        detail: "Protected path cannot be modified autonomously",
+      });
+    } else if (classification === "review_required") {
+      gates.push({
+        id: `path:${file.path}`,
+        status: "warn",
+        detail: "Path requires human review",
+      });
+    }
+  }
+
+  const passed = gatesPassed(gates);
+  const review = {
+    passed,
+    gates,
+    requiredEdits: gates.filter((g) => g.status === "fail").map((g) => g.detail),
+    publishDecision: passed ? ("approve" as const) : ("reject" as const),
+    decisionSummary: passed
+      ? "Quality gates passed"
+      : `Quality gates failed: ${gates
+          .filter((g) => g.status === "fail")
+          .map((g) => g.id)
+          .join(", ")}`,
+  };
+
+  if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
+    try {
+      const result = await generateStructured({
+        tier: "mid",
+        system: "You are the SEO Reviewer. Enforce people-first quality gates. JSON only.",
+        prompt: JSON.stringify({ draft, gates }),
+        schema: reviewOutputSchema,
+      });
+      // Prefer deterministic secret/path fails
+      if (!passed) {
+        result.object.passed = false;
+        result.object.publishDecision = "reject";
+      }
+      Object.assign(review, result.object, { gates: review.gates, passed });
+    } catch {
+      // keep deterministic review
+    }
+  }
+
+  await db.insert(schema.agentRuns).values({
+    seoActionId,
+    projectId,
+    stage: "seo_reviewer",
+    status: review.passed ? "succeeded" : "aborted",
+    input: { fileCount: draft.files.length },
+    output: review,
+    decisionSummary: review.decisionSummary,
+  });
+  return review;
+}
+
+async function executeAndOpenPr(
+  projectId: string,
+  seoActionId: string,
+  selection: ActionSelection,
+  draft: { files: { path: string; content: string; operation: "create" | "update" }[]; decisionSummary: string },
+  review: { gates: unknown; decisionSummary: string },
+) {
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, projectId),
+  });
+  if (!project) throw new Error("Project not found");
+  const repo = await getProjectRepository(projectId);
+  const installation = await getInstallationForProject(projectId);
+  if (!repo || !installation) throw new Error("Repository not connected");
+
+  const branch = `seoneer/${selection.selected.actionType.toLowerCase()}-${seoActionId.slice(0, 8)}`;
+  const qualityReport = {
+    gates: review.gates,
+    actionType: selection.selected.actionType,
+    decisionSummary: selection.decisionSummary,
+    generatedAt: new Date().toISOString(),
+  };
+
+  const prBody = `## Summary
+${selection.decisionSummary}
+
+### Why now
+${selection.selected.whyNow}
+
+### Expected benefit
+- User: ${selection.selected.expectedUserValue}
+- Business: ${selection.selected.expectedBusinessValue}
+
+### Files
+${draft.files.map((f) => `- \`${f.path}\` (${f.operation})`).join("\n")}
+
+### Quality report
+\`\`\`json
+${JSON.stringify(qualityReport, null, 2)}
+\`\`\`
+
+---
+Generated by Seoneer. Review carefully before merging.
+`;
+
+  let commitSha = "local-dry-run";
+  let prNumber = 0;
+  let prUrl = "";
+
+  try {
+    const result = await createBranchCommitAndPr({
+      installationId: installation.installationId,
+      owner: repo.owner,
+      repo: repo.name,
+      baseBranch: repo.defaultBranch,
+      branch,
+      files: draft.files,
+      commitMessage: `seo: ${selection.selected.actionType} via Seoneer`,
+      prTitle: `Seoneer: ${selection.selected.actionType} — ${selection.selected.target}`,
+      prBody,
+    });
+    commitSha = result.commitSha;
+    prNumber = result.prNumber;
+    prUrl = result.prUrl;
+  } catch (error) {
+    // Allow local/dev without GitHub App by recording a dry-run PR row
+    prUrl = `dry-run://${repo.fullName}/pull/seoneer`;
+    await writeAuditLog({
+      workspaceId: project.workspaceId,
+      projectId,
+      action: "pull_request.dry_run",
+      summary:
+        error instanceof Error
+          ? `PR dry-run: ${error.message}`
+          : "PR dry-run due to GitHub error",
+    });
+  }
+
+  const [pr] = await db
+    .insert(schema.pullRequests)
+    .values({
+      seoActionId,
+      projectId,
+      branch,
+      baseBranch: repo.defaultBranch,
+      commitSha,
+      prNumber: prNumber || null,
+      prUrl,
+      qualityReport,
+      checks: { seoneer_quality: "pass" },
+      mergeStatus: "open",
+    })
+    .returning();
+
+  await db
+    .update(schema.seoActions)
+    .set({ status: "awaiting_approval", updatedAt: new Date() })
+    .where(eq(schema.seoActions.id, seoActionId));
+
+  await db.insert(schema.agentRuns).values({
+    seoActionId,
+    projectId,
+    stage: "code_agent",
+    status: "succeeded",
+    input: { files: draft.files.map((f) => f.path) },
+    output: { branch, commitSha, prUrl },
+    decisionSummary: draft.decisionSummary,
+  });
+
+  await writeAuditLog({
+    workspaceId: project.workspaceId,
+    projectId,
+    action: "pull_request.opened",
+    entityType: "pull_request",
+    entityId: pr.id,
+    summary: `Opened PR for ${selection.selected.actionType}`,
+    evidence: { prUrl, branch },
+  });
+
+  const membership = await db.query.workspaceMembers.findFirst({
+    where: eq(schema.workspaceMembers.workspaceId, project.workspaceId),
+  });
+  if (membership) {
+    const user = await db.query.user.findFirst({
+      where: eq(schema.user.id, membership.userId),
+    });
+    if (user?.email) {
+      const { rawToken } = await createApprovalToken(pr.id);
+      const approveUrl = buildApprovalUrl(rawToken);
+      await sendPrReadyEmail({
+        to: user.email,
+        actionType: selection.selected.actionType,
+        why: selection.selected.whyNow,
+        benefit: selection.selected.expectedBusinessValue,
+        fileCount: draft.files.length,
+        prUrl,
+        approveUrl,
+        decisionSummary: selection.decisionSummary,
+      });
+    }
+  }
+
+  const canAuto =
+    project.publicationMode === "auto_safe" &&
+    SAFE_AUTO_MERGE_ACTIONS.has(selection.selected.actionType) &&
+    !selection.selected.humanReviewMandatory &&
+    draft.files.every((f) => classifyPath(f.path) === "allowed");
+
+  if (canAuto && prNumber) {
+    await mergeApprovedPr({
+      pullRequestId: pr.id,
+      userId: membership?.userId ?? "system",
+      source: "auto_safe",
+    });
+  } else {
+    await db
+      .update(schema.projects)
+      .set({
+        agentStatus: "awaiting_approval",
+        agentStatusDetail: selection.decisionSummary,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.projects.id, projectId));
+  }
+
+  return pr;
+}
+
+export async function mergeApprovedPr(input: {
+  pullRequestId: string;
+  userId: string;
+  source: "email" | "dashboard" | "auto_safe";
+}) {
+  const pr = await db.query.pullRequests.findFirst({
+    where: eq(schema.pullRequests.id, input.pullRequestId),
+  });
+  if (!pr) throw new Error("PR not found");
+  if (pr.mergeStatus !== "open") throw new Error("PR is not open");
+
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, pr.projectId),
+  });
+  if (!project) throw new Error("Project not found");
+
+  const billing = await canStartActionCycle(project.workspaceId);
+  // For merge we only block on paused/past_due, not credit balance
+  if (project.status === "paused") throw new Error("Project paused");
+  const sub = await db.query.subscriptions.findFirst({
+    where: eq(schema.subscriptions.workspaceId, project.workspaceId),
+  });
+  if (sub?.status === "paused" || sub?.status === "past_due") {
+    throw new Error("Subscription inactive");
+  }
+
+  const action = await db.query.seoActions.findFirst({
+    where: eq(schema.seoActions.id, pr.seoActionId),
+  });
+  if (!action) throw new Error("Action not found");
+
+  const repo = await getProjectRepository(pr.projectId);
+  const installation = await getInstallationForProject(pr.projectId);
+  if (!repo || !installation) throw new Error("Repository not connected");
+
+  if (pr.prNumber && pr.prUrl && !pr.prUrl.startsWith("dry-run://")) {
+    await mergePullRequest({
+      installationId: installation.installationId,
+      owner: repo.owner,
+      repo: repo.name,
+      prNumber: pr.prNumber,
+      commitSha: pr.commitSha,
+    });
+  }
+
+  await db
+    .update(schema.pullRequests)
+    .set({ mergeStatus: "merged", mergedAt: new Date() })
+    .where(eq(schema.pullRequests.id, pr.id));
+  await db
+    .update(schema.seoActions)
+    .set({ status: "merged", updatedAt: new Date() })
+    .where(eq(schema.seoActions.id, action.id));
+  await db
+    .update(schema.projects)
+    .set({
+      agentStatus: "idle",
+      agentStatusDetail: "Last action merged",
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.projects.id, project.id));
+
+  await writeAuditLog({
+    workspaceId: project.workspaceId,
+    projectId: project.id,
+    userId: input.userId,
+    action: "pull_request.merged",
+    entityType: "pull_request",
+    entityId: pr.id,
+    summary: `Merged via ${input.source}`,
+    evidence: { billingOk: billing.ok },
+  });
+
+  return pr;
+}
