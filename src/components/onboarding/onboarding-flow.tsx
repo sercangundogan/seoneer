@@ -283,8 +283,8 @@ export default function OnboardingFlow() {
           <p className="text-sm text-[var(--fg-muted)]">Select a Next.js repository.</p>
           {repos.length === 0 ? (
             <p className="text-sm">
-              No repos returned. Make sure the GitHub App has access to the repository, then sync
-              again.
+              No repos returned. Make sure the GitHub App has access to the repository, then go back
+              and sync again.
             </p>
           ) : (
             <ul className="space-y-2">
@@ -305,13 +305,28 @@ export default function OnboardingFlow() {
               ))}
             </ul>
           )}
-          <Button
-            type="button"
-            onClick={() => void createProject()}
-            disabled={!selectedRepo || busy}
-          >
-            Analyse repository
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => {
+                setMessage("");
+                setSelectedRepo(null);
+                setRepos([]);
+                setStep(1);
+              }}
+            >
+              Back
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void createProject()}
+              disabled={!selectedRepo || busy}
+            >
+              Analyse repository
+            </Button>
+          </div>
         </section>
       ) : null}
 
@@ -321,9 +336,14 @@ export default function OnboardingFlow() {
           <Input value={productName} onChange={(e) => setProductName(e.target.value)} />
           <label className="text-sm">Product summary</label>
           <Textarea rows={5} value={summary} onChange={(e) => setSummary(e.target.value)} />
-          <Button type="button" onClick={() => setStep(4)}>
-            Confirm summary
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="secondary" onClick={() => setStep(2)}>
+              Back
+            </Button>
+            <Button type="button" onClick={() => setStep(4)}>
+              Confirm summary
+            </Button>
+          </div>
         </section>
       ) : null}
 
@@ -342,9 +362,14 @@ export default function OnboardingFlow() {
               {g}
             </button>
           ))}
-          <Button type="button" onClick={() => setStep(5)}>
-            Continue
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="secondary" onClick={() => setStep(3)}>
+              Back
+            </Button>
+            <Button type="button" onClick={() => setStep(5)}>
+              Continue
+            </Button>
+          </div>
         </section>
       ) : null}
 
@@ -363,9 +388,14 @@ export default function OnboardingFlow() {
               {m.label}
             </button>
           ))}
-          <Button type="button" onClick={() => void finish()} disabled={busy}>
-            Start initial analysis
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="secondary" onClick={() => setStep(4)}>
+              Back
+            </Button>
+            <Button type="button" onClick={() => void finish()} disabled={busy}>
+              Start initial analysis
+            </Button>
+          </div>
         </section>
       ) : null}
     </AppShell>

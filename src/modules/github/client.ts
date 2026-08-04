@@ -43,12 +43,20 @@ function createAppOctokit(): Octokit {
 }
 
 export async function getInstallationOctokit(installationId: number): Promise<Octokit> {
-  const app = createGitHubApp();
-  if (!app) {
+  const privateKey = getPrivateKey();
+  if (!env.GITHUB_APP_ID || !privateKey) {
     throw new Error("GitHub App is not configured");
   }
-  const octokit = await app.getInstallationOctokit(installationId);
-  return octokit as unknown as Octokit;
+  return new Octokit({
+    authStrategy: createAppAuth,
+    auth: {
+      appId: env.GITHUB_APP_ID,
+      privateKey,
+      installationId,
+      clientId: env.GITHUB_APP_CLIENT_ID,
+      clientSecret: env.GITHUB_APP_CLIENT_SECRET,
+    },
+  });
 }
 
 export function githubAppInstallUrl(state?: string): string {
@@ -206,9 +214,10 @@ export async function mergePullRequest(input: {
 
 export async function listInstallationRepos(installationId: number) {
   const octokit = await getInstallationOctokit(installationId);
-  const repos = await octokit.paginate(octokit.apps.listReposAccessibleToInstallation, {
-    per_page: 100,
-  });
+  const repos = await octokit.paginate(
+    octokit.rest.apps.listReposAccessibleToInstallation,
+    { per_page: 100 },
+  );
   return repos.map((r) => ({
     id: r.id,
     owner: r.owner.login,
