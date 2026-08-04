@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/dashboard/app-shell";
+import { AgentStatusPanel } from "@/components/dashboard/agent-status-panel";
 import { Badge, Button } from "@/components/ui/primitives";
+import { isAgentWorking } from "@/lib/agent-status";
 
 type ProjectPayload = {
   project: {
@@ -38,24 +40,27 @@ export default function ProjectPage() {
     if (res.ok) setData(await res.json());
   }, [params.projectId]);
 
+  // Initial load
   useEffect(() => {
     let cancelled = false;
-    const tick = async () => {
+    void (async () => {
       const res = await fetch(`/api/projects/${params.projectId}`);
       if (!cancelled && res.ok) setData(await res.json());
-    };
-    const handle = window.setTimeout(() => {
-      void tick();
-    }, 0);
-    const interval = window.setInterval(() => {
-      void tick();
-    }, 4000);
+    })();
     return () => {
       cancelled = true;
-      window.clearTimeout(handle);
-      window.clearInterval(interval);
     };
   }, [params.projectId]);
+
+  // Poll only while the agent is actively working
+  const working = isAgentWorking(data?.project?.agentStatus);
+  useEffect(() => {
+    if (!working) return;
+    const interval = window.setInterval(() => {
+      void refresh();
+    }, 4000);
+    return () => window.clearInterval(interval);
+  }, [working, refresh]);
 
   async function runCycle() {
     setBusy(true);
@@ -89,32 +94,31 @@ export default function ProjectPage() {
   }
 
   const { project, intelligence, audit, roadmap, actions, logs, billing } = data;
+  const blocked = project.agentStatus === "blocked";
 
   return (
     <AppShell title={project.name}>
-      <section className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-elevated)] p-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-xs uppercase tracking-wide text-[var(--fg-muted)]">What is the agent doing?</p>
-            <p className="mt-2 text-xl font-medium">
-              <span className={project.agentStatus && project.agentStatus !== "idle" ? "animate-status" : ""}>
-                {project.agentStatus ?? "idle"}
-              </span>
-            </p>
-            <p className="mt-2 max-w-2xl text-sm text-[var(--fg-muted)]">
-              {project.agentStatusDetail ?? intelligence?.profile.decisionSummary ?? "Waiting for the next cycle."}
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={() => void connectGsc()}>
+      <AgentStatusPanel
+        status={project.agentStatus}
+        detail={project.agentStatusDetail}
+        fallbackDetail={intelligence?.profile.decisionSummary}
+        projectId={project.id}
+        actions={
+          <>
+            <Button variant="secondary" onClick={() => void connectGsc()} disabled={busy}>
               Connect GSC
             </Button>
-            <Button onClick={() => void runCycle()} loading={busy}>
+            <Button
+              onClick={() => void runCycle()}
+              loading={busy}
+              disabled={blocked}
+              title={blocked ? project.agentStatusDetail ?? "Agent is blocked" : undefined}
+            >
               Run SEO action
             </Button>
-          </div>
-        </div>
-      </section>
+          </>
+        }
+      />
 
       <div className="mt-8 grid gap-8 lg:grid-cols-2">
         <section>
