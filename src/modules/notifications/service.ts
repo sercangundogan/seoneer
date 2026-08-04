@@ -144,6 +144,11 @@ Approve and publish: ${input.approveUrl}
 Review changes: ${input.prUrl}
 `;
 
+  const primaryBtn =
+    "display:inline-block;background:#0f6b5c;color:#ffffff;padding:12px 16px;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;line-height:1.2;";
+  const secondaryBtn =
+    "display:inline-block;background:#ffffff;color:#141414;padding:12px 16px;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;line-height:1.2;border:1px solid #e6e4df;";
+
   const html = `
     <div style="font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;color:#141414;line-height:1.5;">
       <h1 style="font-size:20px;font-weight:600;">SEO update ready</h1>
@@ -152,11 +157,11 @@ Review changes: ${input.prUrl}
       <p><strong>Expected benefit:</strong> ${escapeHtml(input.benefit)}</p>
       <p><strong>Files:</strong> ${input.fileCount}</p>
       <p><strong>Quality checks:</strong> Completed (see PR)</p>
-      <p>${escapeHtml(input.decisionSummary)}</p>
-      <p>
-        <a href="${input.approveUrl}" style="background:#0f6b5c;color:#fff;padding:10px 14px;text-decoration:none;border-radius:8px;">Approve and Publish</a>
-        &nbsp;
-        <a href="${input.prUrl}">Review Changes</a>
+      <p style="margin-bottom:0;">${escapeHtml(input.decisionSummary)}</p>
+      <p style="margin:28px 0 0 0;">
+        <a href="${input.approveUrl}" style="${primaryBtn}">Approve and Publish</a>
+        <!--[if mso]>&nbsp;&nbsp;<![endif]-->
+        <a href="${input.prUrl}" style="${secondaryBtn}margin-left:10px;">Review Changes</a>
       </p>
     </div>
   `;
