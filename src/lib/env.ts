@@ -16,7 +16,7 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),
-  EMAIL_FROM: z.string().default("Seoneer <onboarding@resend.dev>"),
+  EMAIL_FROM: z.string().default("Seoneer <hello@seoneer.site>"),
   APPROVAL_TOKEN_SECRET: z.string().min(16).default("dev-approval-secret-32chars!!"),
   TOKEN_ENCRYPTION_KEY: z.string().min(32).default("dev-encryption-key-32-characters!"),
   GOOGLE_CLIENT_ID: z.string().optional(),

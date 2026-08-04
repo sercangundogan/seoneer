@@ -1,29 +1,39 @@
+import { Webhook } from "standardwebhooks";
 import { json } from "@/lib/api";
 import { env } from "@/lib/env";
-import { createHmac, timingSafeEqual } from "crypto";
 import { enqueueJob } from "@/modules/jobs/enqueue";
-
-function verifyDodoSignature(raw: string, signature: string | null): boolean {
-  if (!env.DODO_WEBHOOK_SECRET || !signature) return !env.DODO_WEBHOOK_SECRET;
-  const expected = createHmac("sha256", env.DODO_WEBHOOK_SECRET).update(raw).digest("hex");
-  try {
-    return timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
-  } catch {
-    return false;
-  }
-}
 
 export async function POST(request: Request) {
   const raw = await request.text();
-  const signature =
-    request.headers.get("x-dodo-signature") ?? request.headers.get("webhook-signature");
-  if (!verifyDodoSignature(raw, signature)) {
-    return json({ error: "Invalid signature" }, 401);
+
+  if (env.DODO_WEBHOOK_SECRET) {
+    const webhookId = request.headers.get("webhook-id");
+    const webhookSignature = request.headers.get("webhook-signature");
+    const webhookTimestamp = request.headers.get("webhook-timestamp");
+
+    if (!webhookId || !webhookSignature || !webhookTimestamp) {
+      return json({ error: "Missing webhook signature headers" }, 401);
+    }
+
+    try {
+      // Secret may be provided as whsec_... — Standard Webhooks accepts that form
+      const wh = new Webhook(env.DODO_WEBHOOK_SECRET);
+      wh.verify(raw, {
+        "webhook-id": webhookId,
+        "webhook-signature": webhookSignature,
+        "webhook-timestamp": webhookTimestamp,
+      });
+    } catch {
+      return json({ error: "Invalid signature" }, 401);
+    }
   }
 
   const payload = JSON.parse(raw) as Record<string, unknown>;
   const externalId = String(
-    payload.id ?? payload.event_id ?? request.headers.get("x-dodo-event-id") ?? crypto.randomUUID(),
+    payload.id ??
+      payload.event_id ??
+      request.headers.get("webhook-id") ??
+      crypto.randomUUID(),
   );
 
   const job = await enqueueJob("billing.processWebhook", { externalId, payload });
