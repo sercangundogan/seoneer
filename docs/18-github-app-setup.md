@@ -8,16 +8,18 @@ This is separate from the **OAuth App** used for Better Auth sign-in.
 1. Open [https://github.com/settings/apps/new](https://github.com/settings/apps/new)
 2. Fill in:
 
-| Field | Value |
-|---|---|
-| **GitHub App name** | `Seoneer` (must be unique; if taken use `Seoneer-yourname`) |
-| **Homepage URL** | `http://localhost:3000` |
-| **Callback URL** | `http://localhost:3000/onboarding` |
-| **Setup URL** (optional) | `http://localhost:3000/onboarding` |
-| **Webhook URL** | `http://localhost:3000/api/github/webhooks` (use a tunnel like ngrok for real webhook delivery locally) |
-| **Webhook secret** | Same value as `GITHUB_APP_WEBHOOK_SECRET` in `.env` (already generated) |
+| Field | Value (local) | Value (production) |
+|---|---|---|
+| **GitHub App name** | `Seoneer` | same |
+| **Homepage URL** | `http://localhost:3000` | `https://seoneer.site` |
+| **Callback URL** | `http://localhost:3000/onboarding` | `https://seoneer.site/onboarding` |
+| **Setup URL** (required for redirect) | `http://localhost:3000/onboarding` | `https://seoneer.site/onboarding` |
+| **Redirect on update** | Checked | Checked |
+| **Webhook URL** | ngrok or disabled | `https://seoneer.site/api/github/webhooks` |
+| **Webhook secret** | `GITHUB_APP_WEBHOOK_SECRET` | same |
 
-Check **Request user authorization (OAuth) during installation** only if you want; not required for MVP install flow.
+Without a **Setup URL**, GitHub leaves users on `github.com/settings/installations/...` and Seoneer never receives `installation_id`. Onboarding can still recover via **I’ve already installed — sync**.
+
 
 ### Permissions → Repository permissions
 

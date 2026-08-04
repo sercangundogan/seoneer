@@ -1,4 +1,5 @@
 import { App } from "@octokit/app";
+import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import { env } from "@/lib/env";
 
@@ -25,6 +26,22 @@ export function createGitHubApp(): App | null {
   });
 }
 
+function createAppOctokit(): Octokit {
+  const privateKey = getPrivateKey();
+  if (!env.GITHUB_APP_ID || !privateKey) {
+    throw new Error("GitHub App is not configured");
+  }
+  return new Octokit({
+    authStrategy: createAppAuth,
+    auth: {
+      appId: env.GITHUB_APP_ID,
+      privateKey,
+      clientId: env.GITHUB_APP_CLIENT_ID,
+      clientSecret: env.GITHUB_APP_CLIENT_SECRET,
+    },
+  });
+}
+
 export async function getInstallationOctokit(installationId: number): Promise<Octokit> {
   const app = createGitHubApp();
   if (!app) {
@@ -34,9 +51,40 @@ export async function getInstallationOctokit(installationId: number): Promise<Oc
   return octokit as unknown as Octokit;
 }
 
-export function githubAppInstallUrl(): string {
+export function githubAppInstallUrl(state?: string): string {
   const slug = env.GITHUB_APP_SLUG ?? "seoneer";
-  return `https://github.com/apps/${slug}/installations/new`;
+  const url = new URL(`https://github.com/apps/${slug}/installations/new`);
+  if (state) url.searchParams.set("state", state);
+  return url.toString();
+}
+
+/** List installations of this GitHub App (app-authenticated). */
+export async function listGithubAppInstallations(): Promise<
+  {
+    installationId: number;
+    accountLogin: string;
+    accountType: string;
+    suspended: boolean;
+  }[]
+> {
+  const octokit = createAppOctokit();
+  const installations = await octokit.paginate(octokit.rest.apps.listInstallations, {
+    per_page: 100,
+  });
+
+  return installations.map((installation) => {
+    const account = installation.account as {
+      login?: string;
+      slug?: string;
+      type?: string;
+    } | null;
+    return {
+      installationId: installation.id,
+      accountLogin: account?.login ?? account?.slug ?? "unknown",
+      accountType: account?.type ?? "Organization",
+      suspended: Boolean(installation.suspended_at),
+    };
+  });
 }
 
 export type RepoFileChange = {

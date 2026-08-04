@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/dashboard/app-shell";
 import { Button, Input, Textarea, Badge } from "@/components/ui/primitives";
 
@@ -42,61 +42,114 @@ export default function OnboardingFlow() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
-  useEffect(() => {
-    void (async () => {
-      const res = await fetch("/api/github/installations");
-      if (!res.ok) return;
-      const data = await res.json();
-      setInstallUrl(data.installUrl);
-      setInstallations(data.installations ?? []);
-      if (data.installations?.[0]) setSelectedInstallation(data.installations[0].id);
-    })();
-  }, []);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const installationId = params.get("installation_id");
-    if (!installationId) return;
-    void (async () => {
-      await fetch("/api/github/installations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          installationId: Number(installationId),
-          accountLogin: "github-user",
-          accountType: "User",
-        }),
-      });
-      const res = await fetch(`/api/github/installations?installation_id=${installationId}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data.installation) {
-        setInstallations((prev) => {
-          const exists = prev.some((i) => i.id === data.installation.id);
-          return exists ? prev : [...prev, data.installation];
-        });
-        setSelectedInstallation(data.installation.id);
-      }
-      setRepos(data.repos ?? []);
-      setStep(2);
-    })();
-  }, []);
-
   const selectedInstallationMeta = useMemo(
     () => installations.find((i) => i.id === selectedInstallation),
     [installations, selectedInstallation],
   );
 
+  const applyInstallations = useCallback((items: Installation[]) => {
+    setInstallations(items);
+    if (items[0]) setSelectedInstallation(items[0].id);
+  }, []);
+
+  const loadReposForInstallation = useCallback(async (githubInstallationId: number) => {
+    const res = await fetch(`/api/github/installations?installation_id=${githubInstallationId}`);
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error ?? "Could not load repositories");
+    }
+    if (data.installation) {
+      setInstallations((prev) => {
+        const exists = prev.some((i) => i.id === data.installation.id);
+        return exists ? prev : [...prev, data.installation];
+      });
+      setSelectedInstallation(data.installation.id);
+    }
+    setRepos(data.repos ?? []);
+    if (data.warning) setMessage(data.warning);
+    setStep(2);
+  }, []);
+
+  const syncInstallations = useCallback(async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const res = await fetch("/api/github/installations?sync=1");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Sync failed");
+      setInstallUrl(data.installUrl ?? "");
+      applyInstallations(data.installations ?? []);
+      if ((data.installations?.length ?? 0) === 0) {
+        setMessage(
+          "No GitHub App installations found yet. Install the app, then click “I’ve already installed — sync”.",
+        );
+        return;
+      }
+      if (data.installations.length === 1) {
+        await loadReposForInstallation(data.installations[0].installationId);
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not sync installations");
+    } finally {
+      setBusy(false);
+    }
+  }, [applyInstallations, loadReposForInstallation]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const params = new URLSearchParams(window.location.search);
+      const installationId = params.get("installation_id");
+
+      if (installationId) {
+        setBusy(true);
+        setMessage("");
+        try {
+          await fetch("/api/github/installations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ installationId: Number(installationId) }),
+          });
+          if (cancelled) return;
+          await loadReposForInstallation(Number(installationId));
+          window.history.replaceState({}, "", "/onboarding");
+        } catch (error) {
+          if (!cancelled) {
+            setMessage(error instanceof Error ? error.message : "Install callback failed");
+          }
+        } finally {
+          if (!cancelled) setBusy(false);
+        }
+        return;
+      }
+
+      const res = await fetch("/api/github/installations");
+      if (!res.ok || cancelled) return;
+      const data = await res.json();
+      setInstallUrl(data.installUrl);
+      applyInstallations(data.installations ?? []);
+
+      if ((data.installations?.length ?? 0) === 0) {
+        await syncInstallations();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally run once on mount (callback + sync recovery)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function loadRepos() {
     if (!selectedInstallationMeta) return;
     setBusy(true);
+    setMessage("");
     try {
-      const res = await fetch(
-        `/api/github/installations?installation_id=${selectedInstallationMeta.installationId}`,
-      );
-      const data = await res.json();
-      setRepos(data.repos ?? []);
-      setStep(2);
+      await loadReposForInstallation(selectedInstallationMeta.installationId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load repositories");
     } finally {
       setBusy(false);
     }
@@ -123,13 +176,11 @@ export default function OnboardingFlow() {
       if (!res.ok) throw new Error(data.error ?? "Failed");
       setProjectId(data.project.id);
       setProductName(selectedRepo.name);
-      setBusy(true);
       await fetch(`/api/projects/${data.project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ startAnalysis: true }),
       });
-      // poll intelligence
       for (let i = 0; i < 20; i++) {
         await new Promise((r) => setTimeout(r, 500));
         const detail = await fetch(`/api/projects/${data.project.id}`);
@@ -186,11 +237,25 @@ export default function OnboardingFlow() {
       {step === 1 ? (
         <section className="max-w-xl space-y-4">
           <p className="text-sm text-[var(--fg-muted)]">
-            Install the Seoneer GitHub App with minimum permissions. Seoneer never writes to your default branch.
+            Install the Seoneer GitHub App with minimum permissions. Seoneer never writes to your
+            default branch. After installing, GitHub should return you here automatically — if it
+            does not, use sync below.
           </p>
-          <a href={installUrl || "https://github.com/apps/seoneer/installations/new"}>
-            <Button>Install GitHub App</Button>
-          </a>
+          <div className="flex flex-wrap gap-2">
+            <a href={installUrl || "https://github.com/apps/seoneer/installations/new"}>
+              <Button type="button" disabled={busy}>
+                Install GitHub App
+              </Button>
+            </a>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => void syncInstallations()}
+            >
+              I’ve already installed — sync
+            </Button>
+          </div>
           {installations.length > 0 ? (
             <div className="space-y-2">
               <label className="text-sm">Existing installation</label>
@@ -205,8 +270,8 @@ export default function OnboardingFlow() {
                   </option>
                 ))}
               </select>
-              <Button onClick={() => void loadRepos()} disabled={busy}>
-                Continue
+              <Button type="button" onClick={() => void loadRepos()} disabled={busy}>
+                Continue with this installation
               </Button>
             </div>
           ) : null}
@@ -217,7 +282,10 @@ export default function OnboardingFlow() {
         <section className="max-w-xl space-y-3">
           <p className="text-sm text-[var(--fg-muted)]">Select a Next.js repository.</p>
           {repos.length === 0 ? (
-            <p className="text-sm">No repos returned. Configure the GitHub App or register the installation.</p>
+            <p className="text-sm">
+              No repos returned. Make sure the GitHub App has access to the repository, then sync
+              again.
+            </p>
           ) : (
             <ul className="space-y-2">
               {repos.map((repo) => (
@@ -237,7 +305,11 @@ export default function OnboardingFlow() {
               ))}
             </ul>
           )}
-          <Button onClick={() => void createProject()} disabled={!selectedRepo || busy}>
+          <Button
+            type="button"
+            onClick={() => void createProject()}
+            disabled={!selectedRepo || busy}
+          >
             Analyse repository
           </Button>
         </section>
@@ -249,7 +321,9 @@ export default function OnboardingFlow() {
           <Input value={productName} onChange={(e) => setProductName(e.target.value)} />
           <label className="text-sm">Product summary</label>
           <Textarea rows={5} value={summary} onChange={(e) => setSummary(e.target.value)} />
-          <Button onClick={() => setStep(4)}>Confirm summary</Button>
+          <Button type="button" onClick={() => setStep(4)}>
+            Confirm summary
+          </Button>
         </section>
       ) : null}
 
@@ -268,7 +342,9 @@ export default function OnboardingFlow() {
               {g}
             </button>
           ))}
-          <Button onClick={() => setStep(5)}>Continue</Button>
+          <Button type="button" onClick={() => setStep(5)}>
+            Continue
+          </Button>
         </section>
       ) : null}
 
@@ -287,7 +363,7 @@ export default function OnboardingFlow() {
               {m.label}
             </button>
           ))}
-          <Button onClick={() => void finish()} disabled={busy}>
+          <Button type="button" onClick={() => void finish()} disabled={busy}>
             Start initial analysis
           </Button>
         </section>
