@@ -21,6 +21,12 @@ import {
   upsertFrontmatterFields,
 } from "@/modules/content-patch/frontmatter";
 import {
+  appendRelatedReadingLinks,
+  applyInternalLinkPatches,
+  buildHeuristicInternalLinkPlan,
+  contentPathToHref,
+} from "@/modules/content-patch/internal-links";
+import {
   assertPathsSafeForAutoMerge,
   classifyPath,
   SAFE_AUTO_MERGE_ACTIONS,
@@ -83,6 +89,41 @@ description: "Gone"
     expect(files).toHaveLength(1);
     expect(files[0].operation).toBe("update");
     expect(files[0].content).toContain("Full article body");
+  });
+});
+
+describe("internal link patch", () => {
+  it("appends related reading without wiping the body", () => {
+    const original = `---
+title: "Post A"
+---
+
+# Post A
+
+Useful article body.
+`;
+    const next = appendRelatedReadingLinks(original, [
+      { title: "Post B", href: "/blog/post-b" },
+    ]);
+    expect(next).toContain("Useful article body.");
+    expect(next).toContain("## Related reading");
+    expect(next).toContain("[Post B](/blog/post-b)");
+    expect(assertUpdatePreservesBody(original, next).ok).toBe(true);
+  });
+
+  it("maps content paths to blog hrefs", () => {
+    expect(contentPathToHref("content/blog/hello-world.mdx")).toBe("/blog/hello-world");
+  });
+
+  it("builds update-only patches from a catalog", () => {
+    const originals = {
+      "content/blog/a.mdx": `---\ntitle: A\n---\n\n# A\n\nBody A long enough.\n`,
+      "content/blog/b.mdx": `---\ntitle: B\n---\n\n# B\n\nBody B long enough.\n`,
+    };
+    const plan = buildHeuristicInternalLinkPlan(Object.keys(originals), originals);
+    const files = applyInternalLinkPatches(originals, plan);
+    expect(files.every((f) => f.operation === "update")).toBe(true);
+    expect(files.some((f) => f.content.includes("Related reading"))).toBe(true);
   });
 });
 

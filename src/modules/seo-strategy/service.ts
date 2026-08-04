@@ -12,6 +12,7 @@ import {
   actionSelectionSchema,
   contentBriefSchema,
   metadataSuggestionsSchema,
+  internalLinkPlanSchema,
   researchResultSchema,
   reviewOutputSchema,
   writerOutputSchema,
@@ -30,6 +31,12 @@ import {
   splitFrontmatter,
 } from "@/modules/content-patch/frontmatter";
 import {
+  applyInternalLinkPatches,
+  buildHeuristicInternalLinkPlan,
+  titleFromContent,
+  contentPathToHref,
+} from "@/modules/content-patch/internal-links";
+import {
   createBranchCommitAndPr,
   getFileContent,
   getRepoTreePaths,
@@ -39,7 +46,6 @@ import {
   getInstallationForProject,
   getProjectRepository,
 } from "@/modules/projects/service";
-import { createApprovalToken, buildApprovalUrl } from "@/modules/pull-requests/approvals";
 import { sendPrReadyEmail } from "@/modules/notifications/service";
 import { recommendCadence } from "@/modules/seo-strategy/cadence";
 
@@ -502,6 +508,38 @@ async function runActionCycleInner(
   await setProjectAgentStatus(projectId, "writing", "Writing repository changes");
   const draft = await runWriterStage(projectId, action.id, brief);
 
+  if (draft.files.length === 0) {
+    await db
+      .update(schema.seoActions)
+      .set({ status: "failed", updatedAt: new Date() })
+      .where(eq(schema.seoActions.id, action.id));
+    await setProjectAgentStatus(
+      projectId,
+      "idle",
+      draft.decisionSummary || "No safe file changes were produced",
+    );
+    return { status: "failed_empty_draft" as const, action, draft };
+  }
+
+  // Never allow "create new stub post" for update-oriented actions
+  if (
+    (brief.actionType === "ADD_INTERNAL_LINKS" ||
+      brief.actionType === "IMPROVE_TITLE_DESCRIPTION" ||
+      brief.actionType === "UPDATE_ARTICLE") &&
+    draft.files.some((f) => f.operation === "create")
+  ) {
+    await db
+      .update(schema.seoActions)
+      .set({ status: "failed", updatedAt: new Date() })
+      .where(eq(schema.seoActions.id, action.id));
+    await setProjectAgentStatus(
+      projectId,
+      "idle",
+      "Rejected draft that created new files instead of updating existing posts",
+    );
+    return { status: "failed_unsafe_draft" as const, action, draft };
+  }
+
   await setProjectAgentStatus(projectId, "validating", "Running quality gates");
   const review = await runReviewStage(projectId, action.id, draft);
 
@@ -812,6 +850,107 @@ Rules:
   };
 }
 
+async function writeInternalLinkPatches(
+  projectId: string,
+  brief: z.infer<typeof contentBriefSchema>,
+): Promise<z.infer<typeof writerOutputSchema>> {
+  const repo = await getProjectRepository(projectId);
+  const installation = await getInstallationForProject(projectId);
+  if (!repo || !installation) {
+    throw new Error("Repository not connected");
+  }
+
+  const paths = await listBlogContentPaths(projectId);
+  if (paths.length < 2) {
+    return {
+      format: "mdx",
+      files: [],
+      claims: [],
+      decisionSummary: "Need at least two existing posts to add internal links",
+    };
+  }
+
+  const originals: Record<string, string> = {};
+  const catalog: { path: string; title: string; href: string; excerpt: string }[] = [];
+
+  for (const path of paths.slice(0, 20)) {
+    const content = await getFileContent({
+      installationId: installation.installationId,
+      owner: repo.owner,
+      repo: repo.name,
+      path,
+      ref: repo.defaultBranch,
+    });
+    if (!content) continue;
+    // Skip tiny/placeholder stubs
+    if (content.length < 120) continue;
+    originals[path] = content;
+    const { body } = splitFrontmatter(content);
+    catalog.push({
+      path,
+      title: titleFromContent(path, content),
+      href: contentPathToHref(path),
+      excerpt: body.slice(0, 280),
+    });
+  }
+
+  if (Object.keys(originals).length < 2) {
+    return {
+      format: "mdx",
+      files: [],
+      claims: [],
+      decisionSummary: "Not enough real posts to safely add internal links",
+    };
+  }
+
+  let plan = buildHeuristicInternalLinkPlan(Object.keys(originals), originals);
+  let decisionSummary = `Added related-reading links across ${plan.length} existing posts (bodies preserved)`;
+
+  if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
+    try {
+      const result = await generateStructured({
+        tier: "mid",
+        system: `You plan internal links between existing blog posts.
+Return JSON updates only: path + links[{title, href}].
+Rules:
+- Only use paths from the provided catalog
+- Only use hrefs from the catalog
+- 1–3 links per source post
+- Never invent article body content or new files
+- Prefer relevant topical connections`,
+        prompt: JSON.stringify({
+          action: "ADD_INTERNAL_LINKS",
+          brief: { workingTitle: brief.workingTitle, searchIntent: brief.searchIntent },
+          catalog,
+        }),
+        schema: internalLinkPlanSchema,
+      });
+      const allowed = new Set(Object.keys(originals));
+      const hrefAllowed = new Set(catalog.map((c) => c.href));
+      plan = result.object.updates
+        .filter((u) => allowed.has(u.path))
+        .map((u) => ({
+          path: u.path,
+          links: u.links.filter((l) => hrefAllowed.has(l.href)).slice(0, 3),
+        }));
+      decisionSummary = result.object.decisionSummary;
+    } catch {
+      // keep heuristic plan
+    }
+  }
+
+  const files = applyInternalLinkPatches(originals, plan);
+  return {
+    format: "mdx",
+    files,
+    claims: [],
+    decisionSummary:
+      files.length > 0
+        ? decisionSummary
+        : "No internal link updates were applied (posts may already have related links)",
+  };
+}
+
 async function runWriterStage(
   projectId: string,
   seoActionId: string,
@@ -835,6 +974,20 @@ async function runWriterStage(
       stage: "writer",
       status: "succeeded",
       input: { brief, mode: "metadata_patch" },
+      output: draft,
+      decisionSummary: draft.decisionSummary,
+    });
+    return draft;
+  }
+
+  if (brief.actionType === "ADD_INTERNAL_LINKS") {
+    const draft = await writeInternalLinkPatches(projectId, brief);
+    await db.insert(schema.agentRuns).values({
+      seoActionId,
+      projectId,
+      stage: "writer",
+      status: "succeeded",
+      input: { brief, mode: "internal_link_patch" },
       output: draft,
       decisionSummary: draft.decisionSummary,
     });
@@ -1186,9 +1339,7 @@ Generated by Seoneer. Review carefully before merging.
     const user = await db.query.user.findFirst({
       where: eq(schema.user.id, membership.userId),
     });
-    if (user?.email) {
-      const { rawToken } = await createApprovalToken(pr.id);
-      const approveUrl = buildApprovalUrl(rawToken);
+    if (user?.email && prUrl && !prUrl.startsWith("dry-run://")) {
       await sendPrReadyEmail({
         to: user.email,
         actionType: selection.selected.actionType,
@@ -1196,7 +1347,6 @@ Generated by Seoneer. Review carefully before merging.
         benefit: selection.selected.expectedBusinessValue,
         fileCount: draft.files.length,
         prUrl,
-        approveUrl,
         decisionSummary: selection.decisionSummary,
       });
     }

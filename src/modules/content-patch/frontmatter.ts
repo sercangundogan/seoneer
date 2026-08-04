@@ -91,8 +91,9 @@ export function assertUpdatePreservesBody(
     return { ok: true };
   }
 
-  // Body changed (e.g. UPDATE_ARTICLE) — still reject catastrophic shrinkage
-  if (updatedBody.length < Math.max(80, Math.floor(originalBody.length * 0.5))) {
+  // Body changed (e.g. UPDATE_ARTICLE or appended related links) —
+  // reject only catastrophic shrinkage, never additive growth.
+  if (updatedBody.length < Math.floor(originalBody.length * 0.5)) {
     return {
       ok: false,
       reason: `Update shrunk the article body from ${originalBody.length} to ${updatedBody.length} chars`,

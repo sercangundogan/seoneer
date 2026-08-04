@@ -249,6 +249,22 @@ export const metadataSuggestionsSchema = z.object({
   decisionSummary: z.string(),
 });
 
+/** Internal-link plan — paths + link targets only, no full file bodies. */
+export const internalLinkPlanSchema = z.object({
+  updates: z.array(
+    z.object({
+      path: z.string(),
+      links: z.array(
+        z.object({
+          title: z.string().min(1),
+          href: z.string().min(1),
+        }),
+      ),
+    }),
+  ),
+  decisionSummary: z.string(),
+});
+
 export const reviewOutputSchema = z.object({
   passed: z.boolean(),
   gates: z.array(

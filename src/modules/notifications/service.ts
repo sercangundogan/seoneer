@@ -127,7 +127,6 @@ export async function sendPrReadyEmail(input: {
   benefit: string;
   fileCount: number;
   prUrl: string;
-  approveUrl: string;
   decisionSummary: string;
 }) {
   const subject = `Seoneer: ${input.actionType} ready for review`;
@@ -140,28 +139,28 @@ Files: ${input.fileCount}
 
 ${input.decisionSummary}
 
-Approve and publish: ${input.approveUrl}
-Review changes: ${input.prUrl}
+Review the pull request on GitHub:
+${input.prUrl}
+
+Seoneer never merges for you — approve the PR when you’re happy with the changes.
 `;
 
   const primaryBtn =
     "display:inline-block;background:#0f6b5c;color:#ffffff;padding:12px 16px;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;line-height:1.2;";
-  const secondaryBtn =
-    "display:inline-block;background:#ffffff;color:#141414;padding:12px 16px;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;line-height:1.2;border:1px solid #e6e4df;";
 
   const html = `
     <div style="font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;color:#141414;line-height:1.5;">
-      <h1 style="font-size:20px;font-weight:600;">SEO update ready</h1>
+      <h1 style="font-size:20px;font-weight:600;">SEO update ready for review</h1>
       <p><strong>What changed:</strong> ${escapeHtml(input.actionType)}</p>
       <p><strong>Why:</strong> ${escapeHtml(input.why)}</p>
       <p><strong>Expected benefit:</strong> ${escapeHtml(input.benefit)}</p>
       <p><strong>Files:</strong> ${input.fileCount}</p>
-      <p><strong>Quality checks:</strong> Completed (see PR)</p>
       <p style="margin-bottom:0;">${escapeHtml(input.decisionSummary)}</p>
       <p style="margin:28px 0 0 0;">
-        <a href="${input.approveUrl}" style="${primaryBtn}">Approve and Publish</a>
-        <!--[if mso]>&nbsp;&nbsp;<![endif]-->
-        <a href="${input.prUrl}" style="${secondaryBtn}margin-left:10px;">Review Changes</a>
+        <a href="${input.prUrl}" style="${primaryBtn}">Review pull request</a>
+      </p>
+      <p style="margin-top:16px;font-size:13px;color:#5c5c5c;">
+        Seoneer opens the PR only — you review and merge on GitHub when ready.
       </p>
     </div>
   `;
