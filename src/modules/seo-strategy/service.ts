@@ -433,6 +433,23 @@ async function runActionCycleInner(
 
   const selection = await selectAction(projectId);
   const actionType = selection.selected.actionType;
+  // Billing uses catalog weights — never trust unbounded AI cost estimates
+  const creditCost = CREDIT_WEIGHTS[actionType] ?? 1;
+
+  if (!billing.useFreeSample && creditCost > 0) {
+    const billingForCost = await canStartActionCycle(project.workspaceId, creditCost);
+    if (!billingForCost.ok) {
+      await db
+        .update(schema.projects)
+        .set({
+          agentStatus: "blocked",
+          agentStatusDetail: billingForCost.reason,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.projects.id, projectId));
+      return { status: "blocked" as const, reason: billingForCost.reason };
+    }
+  }
 
   const [action] = await db
     .insert(schema.seoActions)
@@ -440,8 +457,11 @@ async function runActionCycleInner(
       projectId,
       actionType,
       status: "queued",
-      selection,
-      creditCost: selection.selected.estimatedCreditCost,
+      selection: {
+        ...selection,
+        selected: { ...selection.selected, estimatedCreditCost: creditCost },
+      },
+      creditCost,
       humanReviewMandatory: selection.selected.humanReviewMandatory,
       decisionSummary: selection.decisionSummary,
     })
@@ -491,7 +511,7 @@ async function runActionCycleInner(
     workspaceId: project.workspaceId,
     projectId,
     seoActionId: action.id,
-    amount: Math.max(selection.selected.estimatedCreditCost, 1),
+    amount: Math.max(creditCost, 1),
     useFreeSample: billing.useFreeSample,
   });
   await db

@@ -32,7 +32,10 @@ export async function getBillingState(workspaceId: string) {
   return { subscription, credits, entitlement };
 }
 
-export async function canStartActionCycle(workspaceId: string): Promise<{
+export async function canStartActionCycle(
+  workspaceId: string,
+  requiredCredits = 1,
+): Promise<{
   ok: boolean;
   reason?: string;
   useFreeSample?: boolean;
@@ -45,13 +48,16 @@ export async function canStartActionCycle(workspaceId: string): Promise<{
     if (state.entitlement && !state.entitlement.samplePrUsed) {
       return { ok: true, useFreeSample: true };
     }
-    if ((state.credits?.balance ?? 0) > 0) {
+    if ((state.credits?.balance ?? 0) >= requiredCredits) {
       return { ok: true };
     }
     return { ok: false, reason: "Free sample used. Upgrade for SEO Action credits." };
   }
-  if ((state.credits?.balance ?? 0) <= 0) {
-    return { ok: false, reason: "No SEO Action credits remaining this period." };
+  if ((state.credits?.balance ?? 0) < requiredCredits) {
+    return {
+      ok: false,
+      reason: `Need ${requiredCredits} SEO Action credit(s); ${state.credits?.balance ?? 0} left this period.`,
+    };
   }
   return { ok: true };
 }
