@@ -109,7 +109,7 @@ export default function ProjectPage() {
             <Button variant="secondary" onClick={() => void connectGsc()}>
               Connect GSC
             </Button>
-            <Button onClick={() => void runCycle()} disabled={busy}>
+            <Button onClick={() => void runCycle()} loading={busy}>
               Run SEO action
             </Button>
           </div>

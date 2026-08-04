@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/dashboard/app-shell";
-import { Button, Input, Textarea, Badge } from "@/components/ui/primitives";
+import { Button, Input, Textarea, Badge, Skeleton } from "@/components/ui/primitives";
 
 type Installation = { id: string; installationId: number; accountLogin: string };
 type Repo = {
@@ -26,9 +26,28 @@ const MODES = [
   { id: "auto_safe", label: "Auto-merge safe changes" },
 ] as const;
 
+function OnboardingSkeleton() {
+  return (
+    <section className="max-w-xl space-y-4" aria-busy aria-label="Loading onboarding">
+      <Skeleton className="h-4 w-3/4 max-w-md" />
+      <Skeleton className="h-4 w-full max-w-lg" />
+      <div className="flex flex-wrap gap-2 pt-1">
+        <Skeleton className="h-10 w-40" />
+        <Skeleton className="h-10 w-52" />
+      </div>
+      <div className="space-y-2 pt-2">
+        <Skeleton className="h-3 w-36" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-48" />
+      </div>
+    </section>
+  );
+}
+
 export default function OnboardingFlow() {
   const router = useRouter();
   const [step, setStep] = useState(1);
+  const [booting, setBooting] = useState(true);
   const [installUrl, setInstallUrl] = useState("");
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [selectedInstallation, setSelectedInstallation] = useState<string>("");
@@ -66,7 +85,10 @@ export default function OnboardingFlow() {
       });
       setSelectedInstallation(data.installation.id);
     }
-    setRepos(data.repos ?? []);
+    const nextRepos = (data.repos ?? []) as Repo[];
+    setRepos(nextRepos);
+    // Auto-select when there is only one repository
+    setSelectedRepo(nextRepos.length === 1 ? nextRepos[0] : null);
     if (data.warning) setMessage(data.warning);
     setStep(2);
   }, []);
@@ -103,36 +125,40 @@ export default function OnboardingFlow() {
       const params = new URLSearchParams(window.location.search);
       const installationId = params.get("installation_id");
 
-      if (installationId) {
-        setBusy(true);
-        setMessage("");
-        try {
-          await fetch("/api/github/installations", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ installationId: Number(installationId) }),
-          });
-          if (cancelled) return;
-          await loadReposForInstallation(Number(installationId));
-          window.history.replaceState({}, "", "/onboarding");
-        } catch (error) {
-          if (!cancelled) {
-            setMessage(error instanceof Error ? error.message : "Install callback failed");
+      try {
+        if (installationId) {
+          setBusy(true);
+          setMessage("");
+          try {
+            await fetch("/api/github/installations", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ installationId: Number(installationId) }),
+            });
+            if (cancelled) return;
+            await loadReposForInstallation(Number(installationId));
+            window.history.replaceState({}, "", "/onboarding");
+          } catch (error) {
+            if (!cancelled) {
+              setMessage(error instanceof Error ? error.message : "Install callback failed");
+            }
+          } finally {
+            if (!cancelled) setBusy(false);
           }
-        } finally {
-          if (!cancelled) setBusy(false);
+          return;
         }
-        return;
-      }
 
-      const res = await fetch("/api/github/installations");
-      if (!res.ok || cancelled) return;
-      const data = await res.json();
-      setInstallUrl(data.installUrl);
-      applyInstallations(data.installations ?? []);
+        const res = await fetch("/api/github/installations");
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        setInstallUrl(data.installUrl);
+        applyInstallations(data.installations ?? []);
 
-      if ((data.installations?.length ?? 0) === 0) {
-        await syncInstallations();
+        if ((data.installations?.length ?? 0) === 0) {
+          await syncInstallations();
+        }
+      } finally {
+        if (!cancelled) setBooting(false);
       }
     })();
 
@@ -193,7 +219,6 @@ export default function OnboardingFlow() {
         throw new Error(startBody.error ?? "Failed to start analysis");
       }
 
-      // Poll every 2s (not 0.5s) until profile is ready or analysis errors
       const maxAttempts = 45;
       for (let i = 0; i < maxAttempts; i++) {
         await new Promise((r) => setTimeout(r, 2000));
@@ -257,7 +282,7 @@ export default function OnboardingFlow() {
       <ol className="mb-8 flex flex-wrap gap-2 text-xs text-[var(--fg-muted)]">
         {["GitHub", "Repository", "Summary", "Goal", "Control", "Analyse"].map((label, i) => (
           <li key={label}>
-            <Badge tone={step === i + 1 ? "accent" : "neutral"}>
+            <Badge tone={!booting && step === i + 1 ? "accent" : "neutral"}>
               {i + 1}. {label}
             </Badge>
           </li>
@@ -266,7 +291,9 @@ export default function OnboardingFlow() {
 
       {message ? <p className="mb-4 text-sm text-[var(--danger)]">{message}</p> : null}
 
-      {step === 1 ? (
+      {booting ? <OnboardingSkeleton /> : null}
+
+      {!booting && step === 1 ? (
         <section className="max-w-xl space-y-4">
           <p className="text-sm text-[var(--fg-muted)]">
             Install the Seoneer GitHub App with minimum permissions. Seoneer never writes to your
@@ -282,7 +309,7 @@ export default function OnboardingFlow() {
             <Button
               type="button"
               variant="secondary"
-              disabled={busy}
+              loading={busy}
               onClick={() => void syncInstallations()}
             >
               I’ve already installed — sync
@@ -295,6 +322,7 @@ export default function OnboardingFlow() {
                 className="w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-sm"
                 value={selectedInstallation}
                 onChange={(e) => setSelectedInstallation(e.target.value)}
+                disabled={busy}
               >
                 {installations.map((i) => (
                   <option key={i.id} value={i.id}>
@@ -302,7 +330,7 @@ export default function OnboardingFlow() {
                   </option>
                 ))}
               </select>
-              <Button type="button" onClick={() => void loadRepos()} disabled={busy}>
+              <Button type="button" onClick={() => void loadRepos()} loading={busy}>
                 Continue with this installation
               </Button>
             </div>
@@ -310,9 +338,13 @@ export default function OnboardingFlow() {
         </section>
       ) : null}
 
-      {step === 2 ? (
+      {!booting && step === 2 ? (
         <section className="max-w-xl space-y-3">
-          <p className="text-sm text-[var(--fg-muted)]">Select a Next.js repository.</p>
+          <p className="text-sm text-[var(--fg-muted)]">
+            {repos.length === 1
+              ? "Only one repository is available — it’s selected for you."
+              : "Select a Next.js repository."}
+          </p>
           {repos.length === 0 ? (
             <p className="text-sm">
               No repos returned. Make sure the GitHub App has access to the repository, then go back
@@ -359,7 +391,8 @@ export default function OnboardingFlow() {
             <Button
               type="button"
               onClick={() => void createProject()}
-              disabled={!selectedRepo || busy}
+              disabled={!selectedRepo}
+              loading={busy}
             >
               {busy ? "Analysing…" : "Analyse repository"}
             </Button>
@@ -367,7 +400,7 @@ export default function OnboardingFlow() {
         </section>
       ) : null}
 
-      {step === 3 ? (
+      {!booting && step === 3 ? (
         <section className="max-w-xl space-y-3">
           <p className="text-sm text-[var(--fg-muted)]">
             Review the generated product summary. Edit anything that looks wrong before continuing.
@@ -393,7 +426,7 @@ export default function OnboardingFlow() {
         </section>
       ) : null}
 
-      {step === 4 ? (
+      {!booting && step === 4 ? (
         <section className="max-w-xl space-y-3">
           <p className="text-sm text-[var(--fg-muted)]">Primary SEO goal</p>
           {GOALS.map((g) => (
@@ -419,7 +452,7 @@ export default function OnboardingFlow() {
         </section>
       ) : null}
 
-      {step >= 5 ? (
+      {!booting && step >= 5 ? (
         <section className="max-w-xl space-y-3">
           <p className="text-sm text-[var(--fg-muted)]">Control level</p>
           {MODES.map((m) => (
@@ -438,7 +471,7 @@ export default function OnboardingFlow() {
             <Button type="button" variant="secondary" onClick={() => setStep(4)}>
               Back
             </Button>
-            <Button type="button" onClick={() => void finish()} disabled={busy}>
+            <Button type="button" onClick={() => void finish()} loading={busy}>
               Start initial analysis
             </Button>
           </div>

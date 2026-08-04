@@ -1,11 +1,44 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, TextareaHTMLAttributes } from "react";
+import type {
+  ButtonHTMLAttributes,
+  InputHTMLAttributes,
+  TextareaHTMLAttributes,
+} from "react";
+
+function Spinner({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      className={`h-4 w-4 shrink-0 animate-spin ${className}`}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden
+    >
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="3"
+      />
+      <path
+        className="opacity-90"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"
+      />
+    </svg>
+  );
+}
 
 export function Button({
   variant = "primary",
   className = "",
+  loading = false,
+  disabled,
+  children,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "primary" | "secondary" | "ghost" | "danger";
+  loading?: boolean;
 }) {
   const styles =
     variant === "primary"
@@ -17,9 +50,14 @@ export function Button({
           : "bg-transparent text-[var(--fg-muted)] hover:text-[var(--fg)]";
   return (
     <button
-      className={`inline-flex items-center justify-center rounded-[var(--radius)] px-4 py-2 text-sm font-medium transition disabled:opacity-50 ${styles} ${className}`}
+      className={`inline-flex items-center justify-center gap-2 rounded-[var(--radius)] px-4 py-2 text-sm font-medium transition disabled:opacity-50 ${styles} ${className}`}
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
       {...props}
-    />
+    >
+      {loading ? <Spinner /> : null}
+      {children}
+    </button>
   );
 }
 
@@ -67,5 +105,14 @@ export function Badge({
     >
       {children}
     </span>
+  );
+}
+
+export function Skeleton({ className = "" }: { className?: string }) {
+  return (
+    <div
+      className={`animate-skeleton rounded-[var(--radius)] bg-[var(--border)] ${className}`}
+      aria-hidden
+    />
   );
 }
