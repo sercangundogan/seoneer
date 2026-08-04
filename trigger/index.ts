@@ -13,8 +13,13 @@ export const buildIntelligenceTask = task({
 
 export const initialAuditTask = task({
   id: "project.initialAudit",
-  run: async (payload: { projectId: string }) => {
-    return runInitialAudit(payload.projectId);
+  run: async (payload: { projectId: string; runFirstAction?: boolean }) => {
+    const audit = await runInitialAudit(payload.projectId);
+    if (payload.runFirstAction) {
+      const action = await runActionCycle(payload.projectId);
+      return { audit, action };
+    }
+    return { audit };
   },
 });
 

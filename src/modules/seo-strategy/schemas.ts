@@ -237,6 +237,18 @@ export const writerOutputSchema = z.object({
   decisionSummary: z.string(),
 });
 
+/** Metadata-only suggestions — never includes full file bodies. */
+export const metadataSuggestionsSchema = z.object({
+  files: z.array(
+    z.object({
+      path: z.string(),
+      title: z.string().min(1).max(120),
+      description: z.string().min(1).max(200),
+    }),
+  ),
+  decisionSummary: z.string(),
+});
+
 export const reviewOutputSchema = z.object({
   passed: z.boolean(),
   gates: z.array(

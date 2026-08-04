@@ -20,12 +20,6 @@ const GOALS = [
   "Technical SEO hygiene",
 ];
 
-const MODES = [
-  { id: "review_all", label: "Review every change" },
-  { id: "one_click", label: "One-click email approval" },
-  { id: "auto_safe", label: "Auto-merge safe changes" },
-] as const;
-
 function OnboardingSkeleton() {
   return (
     <section className="max-w-xl space-y-4" aria-busy aria-label="Loading onboarding">
@@ -57,7 +51,6 @@ export default function OnboardingFlow() {
   const [summary, setSummary] = useState("");
   const [productName, setProductName] = useState("");
   const [goal, setGoal] = useState(GOALS[0]);
-  const [mode, setMode] = useState<(typeof MODES)[number]["id"]>("review_all");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [analysisStatus, setAnalysisStatus] = useState("");
@@ -266,9 +259,10 @@ export default function OnboardingFlow() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           primarySeoGoal: goal,
-          publicationMode: mode,
+          publicationMode: "review_all",
           confirmIntelligence: { name: productName, summary },
           startAudit: true,
+          runFirstAction: true,
         }),
       });
       router.push("/dashboard");
@@ -280,7 +274,7 @@ export default function OnboardingFlow() {
   return (
     <AppShell title="Onboarding">
       <ol className="mb-8 flex flex-wrap gap-2 text-xs text-[var(--fg-muted)]">
-        {["GitHub", "Repository", "Summary", "Goal", "Control", "Analyse"].map((label, i) => (
+        {["GitHub", "Repository", "Summary", "Goal", "Finish"].map((label, i) => (
           <li key={label}>
             <Badge tone={!booting && step === i + 1 ? "accent" : "neutral"}>
               {i + 1}. {label}
@@ -441,38 +435,16 @@ export default function OnboardingFlow() {
               {g}
             </button>
           ))}
+          <p className="pt-2 text-sm text-[var(--fg-muted)]">
+            Seoneer opens pull requests against your default branch. You always review and approve
+            before anything merges.
+          </p>
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="secondary" onClick={() => setStep(3)}>
               Back
             </Button>
-            <Button type="button" onClick={() => setStep(5)}>
-              Continue
-            </Button>
-          </div>
-        </section>
-      ) : null}
-
-      {!booting && step >= 5 ? (
-        <section className="max-w-xl space-y-3">
-          <p className="text-sm text-[var(--fg-muted)]">Control level</p>
-          {MODES.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              className={`block w-full rounded-[var(--radius)] border px-4 py-3 text-left text-sm ${
-                mode === m.id ? "border-[var(--accent)]" : "border-[var(--border)]"
-              }`}
-              onClick={() => setMode(m.id)}
-            >
-              {m.label}
-            </button>
-          ))}
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="secondary" onClick={() => setStep(4)}>
-              Back
-            </Button>
             <Button type="button" onClick={() => void finish()} loading={busy}>
-              Start initial analysis
+              Finish & start first SEO action
             </Button>
           </div>
         </section>

@@ -16,10 +16,75 @@ import {
 } from "@/modules/seo-strategy/schemas";
 import { sha256 } from "@/lib/crypto";
 import {
+  applyMetadataPatches,
+  assertUpdatePreservesBody,
+  upsertFrontmatterFields,
+} from "@/modules/content-patch/frontmatter";
+import {
   assertPathsSafeForAutoMerge,
   classifyPath,
   SAFE_AUTO_MERGE_ACTIONS,
 } from "@/modules/github/path-policy";
+
+describe("frontmatter patch", () => {
+  const original = `---
+title: "Old title"
+description: "Old description"
+author: jane
+---
+
+# Old title
+
+Full article body with **markdown** and details.
+
+## Section
+
+More content that must survive.
+`;
+
+  it("updates title/description without touching the body", () => {
+    const next = upsertFrontmatterFields(original, {
+      title: "Better title for CTR",
+      description: "A clearer meta description under 155 characters.",
+    });
+    expect(next).toContain('title: "Better title for CTR"');
+    expect(next).toContain("author: jane");
+    expect(next).toContain("Full article body with **markdown** and details.");
+    expect(next).toContain("More content that must survive.");
+    expect(assertUpdatePreservesBody(original, next).ok).toBe(true);
+  });
+
+  it("rejects updates that wipe the body", () => {
+    const wiped = `---
+title: "Only meta"
+description: "Gone"
+---
+`;
+    const result = assertUpdatePreservesBody(original, wiped);
+    expect(result.ok).toBe(false);
+  });
+
+  it("applies metadata patches only to known originals", () => {
+    const files = applyMetadataPatches(
+      { "content/blog/a.mdx": original },
+      [
+        {
+          path: "content/blog/a.mdx",
+          title: "New",
+          description: "Desc",
+        },
+        {
+          path: "content/blog/missing.mdx",
+          title: "X",
+          description: "Y",
+        },
+      ],
+    );
+    expect(files).toHaveLength(1);
+    expect(files[0].operation).toBe("update");
+    expect(files[0].content).toContain("Full article body");
+  });
+});
 
 describe("path policy", () => {
   it("classifies content as allowed and env as protected", () => {
@@ -28,12 +93,12 @@ describe("path policy", () => {
     expect(classifyPath("package.json")).toBe("review_required");
   });
 
-  it("blocks auto-merge when review paths touched", () => {
+  it("blocks protected paths from automatic PR content", () => {
     const result = assertPathsSafeForAutoMerge(["content/blog/a.mdx", "package.json"]);
     expect(result.ok).toBe(false);
   });
 
-  it("allows safe auto-merge action types", () => {
+  it("marks title/meta improvements as low-risk action types", () => {
     expect(SAFE_AUTO_MERGE_ACTIONS.has("IMPROVE_TITLE_DESCRIPTION")).toBe(true);
     expect(SAFE_AUTO_MERGE_ACTIONS.has("CREATE_ARTICLE")).toBe(false);
   });

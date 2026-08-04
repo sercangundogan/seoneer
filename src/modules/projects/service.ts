@@ -162,7 +162,7 @@ export async function updateProjectSettings(
   userId: string,
   patch: Partial<{
     primarySeoGoal: string;
-    publicationMode: "review_all" | "one_click" | "auto_safe";
+    publicationMode: "review_all" | "one_click";
     status: "onboarding" | "active" | "paused" | "error";
     agentStatus: string;
     agentStatusDetail: string;

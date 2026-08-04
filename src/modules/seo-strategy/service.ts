@@ -11,6 +11,7 @@ import {
   CREDIT_WEIGHTS,
   actionSelectionSchema,
   contentBriefSchema,
+  metadataSuggestionsSchema,
   researchResultSchema,
   reviewOutputSchema,
   writerOutputSchema,
@@ -22,12 +23,16 @@ import {
   gatesPassed,
   runContentQualityGates,
 } from "@/modules/technical-seo/quality-gates";
+import { classifyPath } from "@/modules/github/path-policy";
 import {
-  classifyPath,
-  SAFE_AUTO_MERGE_ACTIONS,
-} from "@/modules/github/path-policy";
+  applyMetadataPatches,
+  assertUpdatePreservesBody,
+  splitFrontmatter,
+} from "@/modules/content-patch/frontmatter";
 import {
   createBranchCommitAndPr,
+  getFileContent,
+  getRepoTreePaths,
   mergePullRequest,
 } from "@/modules/github/client";
 import {
@@ -592,6 +597,151 @@ async function runBriefStage(
   return brief;
 }
 
+async function listBlogContentPaths(projectId: string): Promise<string[]> {
+  const repo = await getProjectRepository(projectId);
+  const installation = await getInstallationForProject(projectId);
+  if (!repo || !installation) return [];
+
+  const cached = await db.query.cachedRepoSummaries.findFirst({
+    where: eq(schema.cachedRepoSummaries.projectId, projectId),
+  });
+  const fromCache = (cached?.summary as { detected?: { contentFiles?: string[] } } | null)
+    ?.detected?.contentFiles;
+  if (fromCache?.length) {
+    return fromCache.filter((p) => /\.(md|mdx)$/i.test(p)).slice(0, 40);
+  }
+
+  const { paths } = await getRepoTreePaths({
+    installationId: installation.installationId,
+    owner: repo.owner,
+    repo: repo.name,
+    ref: repo.defaultBranch,
+  });
+  return paths
+    .filter((p) => /\.(md|mdx)$/i.test(p))
+    .filter((p) => /(^|\/)(content|blog|posts)\//i.test(p) || classifyPath(p) === "allowed")
+    .slice(0, 40);
+}
+
+function heuristicMetadataFromFile(path: string, content: string): {
+  title: string;
+  description: string;
+} {
+  const { frontmatter, body } = splitFrontmatter(content);
+  const titleMatch = frontmatter.match(/^title:\s*(.+)$/m);
+  const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
+  const h1 = body.match(/^#\s+(.+)$/m)?.[1]?.trim();
+  const existingTitle = titleMatch?.[1]?.replace(/^["']|["']$/g, "").trim();
+  const existingDesc = descMatch?.[1]?.replace(/^["']|["']$/g, "").trim();
+  const slugTitle = path
+    .split("/")
+    .pop()
+    ?.replace(/\.(md|mdx)$/i, "")
+    .replace(/[-_]+/g, " ");
+  const title = existingTitle || h1 || slugTitle || "Untitled";
+  const plain = body
+    .replace(/^#+\s+.*/gm, "")
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const description =
+    existingDesc ||
+    plain.slice(0, 155) ||
+    `Learn more about ${title}.`;
+  return { title, description };
+}
+
+async function writeTitleDescriptionPatches(
+  projectId: string,
+  brief: z.infer<typeof contentBriefSchema>,
+): Promise<z.infer<typeof writerOutputSchema>> {
+  const repo = await getProjectRepository(projectId);
+  const installation = await getInstallationForProject(projectId);
+  if (!repo || !installation) {
+    throw new Error("Repository not connected");
+  }
+
+  const paths = await listBlogContentPaths(projectId);
+  if (paths.length === 0) {
+    return {
+      format: "mdx",
+      files: [],
+      claims: [],
+      decisionSummary: "No blog Markdown/MDX files found to update metadata on",
+    };
+  }
+
+  const originals: Record<string, string> = {};
+  const excerpts: { path: string; excerpt: string; currentTitle?: string; currentDescription?: string }[] =
+    [];
+
+  for (const path of paths.slice(0, 15)) {
+    const content = await getFileContent({
+      installationId: installation.installationId,
+      owner: repo.owner,
+      repo: repo.name,
+      path,
+      ref: repo.defaultBranch,
+    });
+    if (!content) continue;
+    originals[path] = content;
+    const { frontmatter, body } = splitFrontmatter(content);
+    excerpts.push({
+      path,
+      excerpt: body.slice(0, 400),
+      currentTitle: frontmatter.match(/^title:\s*(.+)$/m)?.[1],
+      currentDescription: frontmatter.match(/^description:\s*(.+)$/m)?.[1],
+    });
+  }
+
+  let suggestions: z.infer<typeof metadataSuggestionsSchema>["files"] = excerpts.map((item) => {
+    const meta = heuristicMetadataFromFile(item.path, originals[item.path]);
+    return { path: item.path, title: meta.title, description: meta.description };
+  });
+  let decisionSummary = `Updated title/description frontmatter on ${suggestions.length} existing posts (body preserved)`;
+
+  if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
+    try {
+      const result = await generateStructured({
+        tier: "mid",
+        system: `You improve SEO title and meta description only.
+Return JSON with path, title, description for each file.
+Rules:
+- Never invent article body content
+- Keep brand/product names accurate
+- Titles <= 60 chars preferred; descriptions <= 155 chars
+- Only include paths from the provided list`,
+        prompt: JSON.stringify({
+          action: "IMPROVE_TITLE_DESCRIPTION",
+          brief: {
+            workingTitle: brief.workingTitle,
+            searchIntent: brief.searchIntent,
+            metadata: brief.metadata,
+          },
+          files: excerpts,
+        }),
+        schema: metadataSuggestionsSchema,
+      });
+      const allowed = new Set(Object.keys(originals));
+      suggestions = result.object.files.filter((f) => allowed.has(f.path));
+      decisionSummary = result.object.decisionSummary;
+    } catch {
+      // keep heuristic suggestions
+    }
+  }
+
+  const files = applyMetadataPatches(originals, suggestions);
+  return {
+    format: "mdx",
+    files,
+    claims: [],
+    decisionSummary:
+      files.length > 0
+        ? decisionSummary
+        : "No metadata changes were needed after reviewing existing frontmatter",
+  };
+}
+
 async function runWriterStage(
   projectId: string,
   seoActionId: string,
@@ -605,6 +755,21 @@ async function runWriterStage(
   const intelligence = await getLatestIntelligence(projectId);
   const profile = intelligence?.profile as ProjectIntelligenceProfile | undefined;
   const blogDir = profile?.website.blogDirectory ?? "content/blog";
+
+  // Title/description must surgically patch existing files — never rewrite bodies.
+  if (brief.actionType === "IMPROVE_TITLE_DESCRIPTION") {
+    const draft = await writeTitleDescriptionPatches(projectId, brief);
+    await db.insert(schema.agentRuns).values({
+      seoActionId,
+      projectId,
+      stage: "writer",
+      status: "succeeded",
+      input: { brief, mode: "metadata_patch" },
+      output: draft,
+      decisionSummary: draft.decisionSummary,
+    });
+    return draft;
+  }
 
   let draft: z.infer<typeof writerOutputSchema> = {
     format: "mdx",
@@ -690,8 +855,10 @@ export default function robots(): MetadataRoute.Robots {
     try {
       const result = await generateStructured({
         tier: "strong",
-        system:
-          "You are the Writer agent. Produce file changes only. Never fabricate statistics, quotes, customers, or product capabilities.",
+        system: `You are the Writer agent. Produce file changes only.
+For operation "update", you MUST include the COMPLETE original file content with only the intended edits.
+Never replace an article with only frontmatter/title/description.
+Never fabricate statistics, quotes, customers, or product capabilities.`,
         prompt: JSON.stringify({ brief, profile }),
         schema: writerOutputSchema,
       });
@@ -716,7 +883,10 @@ export default function robots(): MetadataRoute.Robots {
 async function runReviewStage(
   projectId: string,
   seoActionId: string,
-  draft: { files: { path: string; content: string }[]; decisionSummary: string },
+  draft: {
+    files: { path: string; content: string; operation?: "create" | "update" }[];
+    decisionSummary: string;
+  },
 ) {
   await db
     .update(schema.seoActions)
@@ -729,6 +899,9 @@ async function runReviewStage(
     files: draft.files,
     productName: profile?.product.name,
   });
+
+  const repo = await getProjectRepository(projectId);
+  const installation = await getInstallationForProject(projectId);
 
   for (const file of draft.files) {
     const classification = classifyPath(file.path, profile?.codeSafety);
@@ -744,6 +917,31 @@ async function runReviewStage(
         status: "warn",
         detail: "Path requires human review",
       });
+    }
+
+    if (
+      file.operation === "update" &&
+      repo &&
+      installation &&
+      /\.(md|mdx)$/i.test(file.path)
+    ) {
+      const original = await getFileContent({
+        installationId: installation.installationId,
+        owner: repo.owner,
+        repo: repo.name,
+        path: file.path,
+        ref: repo.defaultBranch,
+      });
+      if (original) {
+        const preserve = assertUpdatePreservesBody(original, file.content);
+        if (!preserve.ok) {
+          gates.push({
+            id: `body:${file.path}`,
+            status: "fail",
+            detail: preserve.reason ?? "Update would strip article body",
+          });
+        }
+      }
     }
   }
 
@@ -934,28 +1132,15 @@ Generated by Seoneer. Review carefully before merging.
     }
   }
 
-  const canAuto =
-    project.publicationMode === "auto_safe" &&
-    SAFE_AUTO_MERGE_ACTIONS.has(selection.selected.actionType) &&
-    !selection.selected.humanReviewMandatory &&
-    draft.files.every((f) => classifyPath(f.path) === "allowed");
-
-  if (canAuto && prNumber) {
-    await mergeApprovedPr({
-      pullRequestId: pr.id,
-      userId: membership?.userId ?? "system",
-      source: "auto_safe",
-    });
-  } else {
-    await db
-      .update(schema.projects)
-      .set({
-        agentStatus: "awaiting_approval",
-        agentStatusDetail: selection.decisionSummary,
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.projects.id, projectId));
-  }
+  // Always await human review — never auto-merge into the default branch.
+  await db
+    .update(schema.projects)
+    .set({
+      agentStatus: "awaiting_approval",
+      agentStatusDetail: selection.decisionSummary,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.projects.id, projectId));
 
   return pr;
 }
@@ -963,7 +1148,7 @@ Generated by Seoneer. Review carefully before merging.
 export async function mergeApprovedPr(input: {
   pullRequestId: string;
   userId: string;
-  source: "email" | "dashboard" | "auto_safe";
+  source: "email" | "dashboard";
 }) {
   const pr = await db.query.pullRequests.findFirst({
     where: eq(schema.pullRequests.id, input.pullRequestId),

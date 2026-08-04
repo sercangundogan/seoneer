@@ -191,7 +191,7 @@ export default function ProjectPage() {
             <p>Free sample PR used: {billing?.entitlement?.samplePrUsed ? "yes" : "no"}</p>
             <p>Credits: {billing?.credits?.balance ?? 0}</p>
             <p className="text-[var(--fg-muted)]">
-              Goal: {project.primarySeoGoal ?? "—"} · Mode: {project.publicationMode}
+              Goal: {project.primarySeoGoal ?? "—"} · Changes ship as PRs for your review
             </p>
           </div>
         </section>

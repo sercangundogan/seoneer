@@ -48,7 +48,7 @@ export async function GET(_req: Request, { params }: Params) {
 
 const patchSchema = z.object({
   primarySeoGoal: z.string().optional(),
-  publicationMode: z.enum(["review_all", "one_click", "auto_safe"]).optional(),
+  publicationMode: z.enum(["review_all", "one_click"]).optional(),
   confirmIntelligence: z
     .object({
       name: z.string().optional(),
@@ -59,6 +59,7 @@ const patchSchema = z.object({
     .optional(),
   startAnalysis: z.boolean().optional(),
   startAudit: z.boolean().optional(),
+  runFirstAction: z.boolean().optional(),
   runActionCycle: z.boolean().optional(),
   monitorPerformance: z.boolean().optional(),
 });
@@ -97,7 +98,16 @@ export async function PATCH(request: Request, { params }: Params) {
       jobs.push({ name: "project.buildIntelligence", id: job.id });
     }
     if (body.startAudit) {
-      const job = await enqueueJob("project.initialAudit", { projectId });
+      if (body.runFirstAction) {
+        await updateProjectSettings(projectId, session.user.id, {
+          agentStatus: "selecting_action",
+          agentStatusDetail: "Running initial audit, then your first SEO action",
+        });
+      }
+      const job = await enqueueJob("project.initialAudit", {
+        projectId,
+        runFirstAction: Boolean(body.runFirstAction),
+      });
       jobs.push({ name: "project.initialAudit", id: job.id });
     }
     if (body.runActionCycle) {

@@ -28,7 +28,6 @@ export default function NewProjectPage() {
   const [selectedRepo, setSelectedRepo] = useState<Repo | null>(null);
   const [defaults, setDefaults] = useState<{
     primarySeoGoal?: string | null;
-    publicationMode?: string;
   }>({});
 
   const selectedMeta = useMemo(
@@ -48,12 +47,11 @@ export default function NewProjectPage() {
     const set = new Set((data.connectedRepos ?? []) as string[]);
     setConnected(set);
     const first = (data.projects ?? [])[0] as
-      | { primarySeoGoal?: string | null; publicationMode?: string }
+      | { primarySeoGoal?: string | null }
       | undefined;
     if (first) {
       setDefaults({
         primarySeoGoal: first.primarySeoGoal,
-        publicationMode: first.publicationMode,
       });
     }
     return set;
@@ -131,9 +129,11 @@ export default function NewProjectPage() {
       if (!res.ok) throw new Error(data.error ?? "Failed to create project");
 
       const id = data.project.id as string;
-      const patch: Record<string, unknown> = { startAnalysis: true };
+      const patch: Record<string, unknown> = {
+        startAnalysis: true,
+        publicationMode: "review_all",
+      };
       if (defaults.primarySeoGoal) patch.primarySeoGoal = defaults.primarySeoGoal;
-      if (defaults.publicationMode) patch.publicationMode = defaults.publicationMode;
 
       await fetch(`/api/projects/${id}`, {
         method: "PATCH",

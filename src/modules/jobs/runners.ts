@@ -10,9 +10,19 @@ export async function runJobInline(name: string, payload: Record<string, unknown
     case "project.buildIntelligence":
       await buildIntelligenceProfile(String(payload.projectId));
       break;
-    case "project.initialAudit":
-      await runInitialAudit(String(payload.projectId));
+    case "project.initialAudit": {
+      const projectId = String(payload.projectId);
+      await runInitialAudit(projectId);
+      // Onboarding: audit first, then automatically start the first SEO action
+      if (payload.runFirstAction) {
+        try {
+          await runActionCycle(projectId);
+        } catch (error) {
+          console.error("First SEO action after onboarding audit failed", error);
+        }
+      }
       break;
+    }
     case "seo.runActionCycle":
       await runActionCycle(String(payload.projectId));
       break;
