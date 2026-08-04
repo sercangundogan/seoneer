@@ -1,7 +1,44 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
+import { ApiError } from "@/lib/api";
 import { assertWorkspaceMember } from "@/modules/workspaces/service";
 import { writeAuditLog } from "@/modules/audit-logs/service";
+
+export async function findWorkspaceProjectByFullName(
+  workspaceId: string,
+  fullName: string,
+) {
+  const rows = await db
+    .select({
+      projectId: schema.projects.id,
+      fullName: schema.projectRepositories.fullName,
+    })
+    .from(schema.projectRepositories)
+    .innerJoin(
+      schema.projects,
+      eq(schema.projectRepositories.projectId, schema.projects.id),
+    )
+    .where(
+      and(
+        eq(schema.projects.workspaceId, workspaceId),
+        eq(schema.projectRepositories.fullName, fullName),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function listConnectedRepoFullNames(workspaceId: string): Promise<string[]> {
+  const rows = await db
+    .select({ fullName: schema.projectRepositories.fullName })
+    .from(schema.projectRepositories)
+    .innerJoin(
+      schema.projects,
+      eq(schema.projectRepositories.projectId, schema.projects.id),
+    )
+    .where(eq(schema.projects.workspaceId, workspaceId));
+  return rows.map((r) => r.fullName);
+}
 
 export async function createProject(input: {
   workspaceId: string;
@@ -15,6 +52,14 @@ export async function createProject(input: {
   htmlUrl: string;
 }) {
   await assertWorkspaceMember(input.workspaceId, input.userId);
+
+  const duplicate = await findWorkspaceProjectByFullName(input.workspaceId, input.fullName);
+  if (duplicate) {
+    throw new ApiError(
+      `Repository ${input.fullName} is already connected to a project.`,
+      409,
+    );
+  }
 
   const [project] = await db
     .insert(schema.projects)
@@ -49,6 +94,24 @@ export async function createProject(input: {
   return project;
 }
 
+export async function deleteProject(projectId: string, userId: string) {
+  const project = await getProjectForUser(projectId, userId);
+  if (!project) throw new ApiError("Not found", 404);
+
+  await writeAuditLog({
+    workspaceId: project.workspaceId,
+    projectId: project.id,
+    userId,
+    action: "project.deleted",
+    entityType: "project",
+    entityId: project.id,
+    summary: `Deleted project ${project.name}`,
+  });
+
+  await db.delete(schema.projects).where(eq(schema.projects.id, projectId));
+  return { ok: true as const };
+}
+
 export async function getProjectForUser(projectId: string, userId: string) {
   const project = await db.query.projects.findFirst({
     where: eq(schema.projects.id, projectId),
@@ -66,6 +129,31 @@ export async function listProjectsForUser(userId: string) {
   return db.query.projects.findMany({
     where: eq(schema.projects.workspaceId, membership.workspaceId),
     orderBy: [desc(schema.projects.createdAt)],
+  });
+}
+
+export type ProjectListItem = Awaited<ReturnType<typeof listProjectsForUser>>[number] & {
+  repository?: { fullName: string; htmlUrl: string } | null;
+};
+
+export async function listProjectsWithReposForUser(userId: string): Promise<ProjectListItem[]> {
+  const projects = await listProjectsForUser(userId);
+  if (projects.length === 0) return [];
+
+  const repos = await db.query.projectRepositories.findMany({
+    where: inArray(
+      schema.projectRepositories.projectId,
+      projects.map((p) => p.id),
+    ),
+  });
+  const byProject = new Map(repos.map((r) => [r.projectId, r]));
+
+  return projects.map((p) => {
+    const repo = byProject.get(p.id);
+    return {
+      ...p,
+      repository: repo ? { fullName: repo.fullName, htmlUrl: repo.htmlUrl } : null,
+    };
   });
 }
 
@@ -141,8 +229,6 @@ export async function upsertGithubInstallation(input: {
 
 export async function listInstallations(workspaceId: string) {
   return db.query.githubInstallations.findMany({
-    where: and(
-      eq(schema.githubInstallations.workspaceId, workspaceId),
-    ),
+    where: and(eq(schema.githubInstallations.workspaceId, workspaceId)),
   });
 }

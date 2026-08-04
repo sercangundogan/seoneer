@@ -3,11 +3,11 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { auth } from "@/modules/auth";
 import { resolvePostAuthPath } from "@/modules/workspaces/post-auth";
-import { listProjectsForUser } from "@/modules/projects/service";
+import { listProjectsWithReposForUser } from "@/modules/projects/service";
 import { AppShell } from "@/components/dashboard/app-shell";
 import { AgentStatusPanel } from "@/components/dashboard/agent-status-panel";
-import { Badge } from "@/components/ui/primitives";
-import { formatAgentStatus, resolveAgentStatusCta } from "@/lib/agent-status";
+import { ProjectsList } from "@/components/dashboard/projects-list";
+import { resolveAgentStatusCta } from "@/lib/agent-status";
 
 export default async function DashboardPage({
   searchParams,
@@ -25,7 +25,7 @@ export default async function DashboardPage({
   }
 
   const params = await searchParams;
-  const projects = await listProjectsForUser(session.user.id);
+  const projects = await listProjectsWithReposForUser(session.user.id);
   const primary = projects[0];
 
   const attention: { text: string; href?: string; cta?: string }[] = [];
@@ -105,37 +105,16 @@ export default async function DashboardPage({
             )}
           </ul>
         </section>
-        <section>
-          <h2 className="text-sm font-medium text-[var(--fg-muted)]">Projects</h2>
-          <div className="mt-3 space-y-2">
-            {projects.map((p) => (
-              <Link
-                key={p.id}
-                href={`/projects/${p.id}`}
-                className="block rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-3 text-sm hover:border-[var(--accent)]"
-              >
-                <span className="font-medium">{p.name}</span>
-                <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--fg-muted)]">
-                  <span>{p.status}</span>
-                  {p.agentStatus ? (
-                    <Badge
-                      tone={
-                        p.agentStatus === "blocked" || p.agentStatus === "error"
-                          ? "danger"
-                          : p.agentStatus === "awaiting_approval" ||
-                              p.agentStatus === "needs_input"
-                            ? "warning"
-                            : "neutral"
-                      }
-                    >
-                      {formatAgentStatus(p.agentStatus)}
-                    </Badge>
-                  ) : null}
-                </span>
-              </Link>
-            ))}
-          </div>
-        </section>
+
+        <ProjectsList
+          projects={projects.map((p) => ({
+            id: p.id,
+            name: p.name,
+            status: p.status,
+            agentStatus: p.agentStatus,
+            repository: p.repository,
+          }))}
+        />
       </div>
     </AppShell>
   );

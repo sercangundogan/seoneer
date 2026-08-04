@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
+import { ApiError } from "@/lib/api";
 import { grantFreeEntitlement } from "@/modules/billing/service";
 
 function slugify(input: string): string {
@@ -63,7 +64,7 @@ export async function assertWorkspaceMember(workspaceId: string, userId: string)
     where: eq(schema.workspaceMembers.userId, userId),
   });
   if (!membership || membership.workspaceId !== workspaceId) {
-    throw new Error("Forbidden");
+    throw new ApiError("Forbidden", 403);
   }
   return membership;
 }

@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { desc, eq } from "drizzle-orm";
 import { json, requireSession, handleRouteError } from "@/lib/api";
-import { getProjectForUser, updateProjectSettings } from "@/modules/projects/service";
+import {
+  deleteProject,
+  getProjectForUser,
+  updateProjectSettings,
+} from "@/modules/projects/service";
 import { enqueueJob } from "@/modules/jobs/enqueue";
 import { confirmIntelligenceProfile, getLatestIntelligence } from "@/modules/intelligence/service";
 import { listAuditLogs } from "@/modules/audit-logs/service";
@@ -107,6 +111,17 @@ export async function PATCH(request: Request, { params }: Params) {
 
     const updated = await getProjectForUser(projectId, session.user.id);
     return json({ project: updated, jobs });
+  } catch (error) {
+    return handleRouteError(error);
+  }
+}
+
+export async function DELETE(_req: Request, { params }: Params) {
+  try {
+    const session = await requireSession();
+    const { projectId } = await params;
+    await deleteProject(projectId, session.user.id);
+    return json({ ok: true });
   } catch (error) {
     return handleRouteError(error);
   }
