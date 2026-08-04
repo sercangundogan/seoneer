@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/dashboard/app-shell";
 import { AgentStatusPanel } from "@/components/dashboard/agent-status-panel";
 import {
@@ -75,22 +75,49 @@ function toInputs(rows: WorkProgramApiRow[] | undefined): WorkProgramInput[] {
 }
 
 export default function ProjectPage() {
+  return (
+    <Suspense
+      fallback={
+        <AppShell title="Project">
+          <p className="text-sm text-[var(--fg-muted)]">Loading…</p>
+        </AppShell>
+      }
+    >
+      <ProjectPageInner />
+    </Suspense>
+  );
+}
+
+function ProjectPageInner() {
   const params = useParams<{ projectId: string }>();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [data, setData] = useState<ProjectPayload | null>(null);
   const [busy, setBusy] = useState(false);
-  const [forcePoll, setForcePoll] = useState(false);
+  const [forcePoll, setForcePoll] = useState(() => searchParams.get("live") === "1");
   const [programDraft, setProgramDraft] = useState<WorkProgramInput[]>(defaultWorkProgramInputs());
   const [savingPrograms, setSavingPrograms] = useState(false);
   const [programMessage, setProgramMessage] = useState("");
+  const programsDirtyRef = useRef(false);
 
   const refresh = useCallback(async () => {
     const res = await fetch(`/api/projects/${params.projectId}`);
     if (res.ok) {
       const body = (await res.json()) as ProjectPayload;
       setData(body);
-      setProgramDraft(toInputs(body.workPrograms));
+      // Don't wipe in-progress edits while status polling
+      if (!programsDirtyRef.current) {
+        setProgramDraft(toInputs(body.workPrograms));
+      }
     }
   }, [params.projectId]);
+
+  // Arrive from onboarding with ?live=1 → keep polling until the agent settles
+  useEffect(() => {
+    if (searchParams.get("live") !== "1") return;
+    setForcePoll(true);
+    router.replace(`/projects/${params.projectId}`, { scroll: false });
+  }, [searchParams, params.projectId, router]);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,9 +137,10 @@ export default function ProjectPage() {
   const working = isAgentWorking(data?.project?.agentStatus) || forcePoll;
   useEffect(() => {
     if (!working) return;
+    void refresh();
     const interval = window.setInterval(() => {
       void refresh();
-    }, 2500);
+    }, 2000);
     return () => window.clearInterval(interval);
   }, [working, refresh]);
 
@@ -126,7 +154,7 @@ export default function ProjectPage() {
 
   useEffect(() => {
     if (!forcePoll) return;
-    const timeout = window.setTimeout(() => setForcePoll(false), 180_000);
+    const timeout = window.setTimeout(() => setForcePoll(false), 240_000);
     return () => window.clearTimeout(timeout);
   }, [forcePoll]);
 
@@ -134,6 +162,10 @@ export default function ProjectPage() {
     const saved = toInputs(data?.workPrograms);
     return JSON.stringify(saved) !== JSON.stringify(programDraft);
   }, [data?.workPrograms, programDraft]);
+
+  useEffect(() => {
+    programsDirtyRef.current = programsDirty;
+  }, [programsDirty]);
 
   async function savePrograms() {
     if (!programsDirty || savingPrograms) return;

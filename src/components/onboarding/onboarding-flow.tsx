@@ -271,7 +271,7 @@ export default function OnboardingFlow() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? "Failed to finish onboarding");
-      router.push("/dashboard");
+      router.push(`/projects/${projectId}?live=1`);
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Error");
     } finally {
