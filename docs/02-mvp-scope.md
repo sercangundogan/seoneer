@@ -8,9 +8,8 @@
 - Install GitHub App
 - Select one repository (free: one project)
 - Confirm/edit generated Project Intelligence Profile
-- Select primary SEO goal
-- Select control / publication level
-- Start initial analysis
+- Select work programs (multi-select) and per-program periods
+- Start initial analysis + free sample action
 
 ### Analysis and strategy
 
@@ -19,7 +18,8 @@
 - Google Search Console connect (read-only)
 - Initial technical, content, keyword (GSC-first), and shallow competitor audit
 - Prioritised SEO roadmap
-- Recommended publishing cadence (not a fixed “post every N days”)
+- User-selected work programs with per-program periods (schedules of record)
+- Recommended publishing cadence (advisory, from audit)
 
 ### Action loop
 

@@ -4,6 +4,11 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/dashboard/app-shell";
 import { Button, Input, Textarea, Badge, Skeleton } from "@/components/ui/primitives";
+import { WorkProgramsEditor } from "@/components/work-programs/work-programs-editor";
+import {
+  defaultWorkProgramInputs,
+  type WorkProgramInput,
+} from "@/modules/work-programs/catalog";
 
 type Installation = { id: string; installationId: number; accountLogin: string };
 type Repo = {
@@ -13,12 +18,6 @@ type Repo = {
   defaultBranch: string;
   htmlUrl: string;
 };
-
-const GOALS = [
-  "Grow organic signups",
-  "Educate users about the product",
-  "Technical SEO hygiene",
-];
 
 function OnboardingSkeleton() {
   return (
@@ -50,7 +49,9 @@ export default function OnboardingFlow() {
   const [projectId, setProjectId] = useState<string>("");
   const [summary, setSummary] = useState("");
   const [productName, setProductName] = useState("");
-  const [goal, setGoal] = useState(GOALS[0]);
+  const [workPrograms, setWorkPrograms] = useState<WorkProgramInput[]>(() =>
+    defaultWorkProgramInputs(),
+  );
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [analysisStatus, setAnalysisStatus] = useState("");
@@ -59,6 +60,8 @@ export default function OnboardingFlow() {
     () => installations.find((i) => i.id === selectedInstallation),
     [installations, selectedInstallation],
   );
+
+  const hasEnabledProgram = workPrograms.some((p) => p.enabled);
 
   const applyInstallations = useCallback((items: Installation[]) => {
     setInstallations(items);
@@ -251,21 +254,26 @@ export default function OnboardingFlow() {
   }
 
   async function finish() {
-    if (!projectId) return;
+    if (!projectId || !hasEnabledProgram) return;
     setBusy(true);
+    setMessage("");
     try {
-      await fetch(`/api/projects/${projectId}`, {
+      const res = await fetch(`/api/projects/${projectId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          primarySeoGoal: goal,
+          workPrograms,
           publicationMode: "review_all",
           confirmIntelligence: { name: productName, summary },
           startAudit: true,
           runFirstAction: true,
         }),
       });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Failed to finish onboarding");
       router.push("/dashboard");
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "Error");
     } finally {
       setBusy(false);
     }
@@ -274,7 +282,7 @@ export default function OnboardingFlow() {
   return (
     <AppShell title="Onboarding">
       <ol className="mb-8 flex flex-wrap gap-2 text-xs text-[var(--fg-muted)]">
-        {["GitHub", "Repository", "Summary", "Goal", "Finish"].map((label, i) => (
+        {["GitHub", "Repository", "Summary", "Programs", "Finish"].map((label, i) => (
           <li key={label}>
             <Badge tone={!booting && step === i + 1 ? "accent" : "neutral"}>
               {i + 1}. {label}
@@ -421,29 +429,33 @@ export default function OnboardingFlow() {
       ) : null}
 
       {!booting && step === 4 ? (
-        <section className="max-w-xl space-y-3">
-          <p className="text-sm text-[var(--fg-muted)]">Primary SEO goal</p>
-          {GOALS.map((g) => (
-            <button
-              key={g}
-              type="button"
-              className={`block w-full rounded-[var(--radius)] border px-4 py-3 text-left text-sm ${
-                goal === g ? "border-[var(--accent)]" : "border-[var(--border)]"
-              }`}
-              onClick={() => setGoal(g)}
-            >
-              {g}
-            </button>
-          ))}
-          <p className="pt-2 text-sm text-[var(--fg-muted)]">
-            Seoneer opens pull requests against your default branch. You always review and approve
-            before anything merges.
+        <section className="max-w-xl space-y-4">
+          <div>
+            <h2 className="text-lg font-medium">What should Seoneer do?</h2>
+            <p className="mt-1 text-sm text-[var(--fg-muted)]">
+              Pick the work you want on autopilot, and how often. You can change this later.
+            </p>
+          </div>
+          <WorkProgramsEditor
+            value={workPrograms}
+            onChange={setWorkPrograms}
+            disabled={busy}
+            note="Your first update is free. Automatic cadence unlocks with a plan — we’ll email you when a PR is ready to review."
+          />
+          <p className="text-sm text-[var(--fg-muted)]">
+            Seoneer opens pull requests against your default branch. You always review before anything
+            merges.
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="secondary" onClick={() => setStep(3)}>
+            <Button type="button" variant="secondary" onClick={() => setStep(3)} disabled={busy}>
               Back
             </Button>
-            <Button type="button" onClick={() => void finish()} loading={busy}>
+            <Button
+              type="button"
+              onClick={() => void finish()}
+              loading={busy}
+              disabled={!hasEnabledProgram}
+            >
               Finish & start first SEO action
             </Button>
           </div>

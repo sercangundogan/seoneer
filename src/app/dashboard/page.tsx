@@ -4,8 +4,13 @@ import Link from "next/link";
 import { auth } from "@/modules/auth";
 import { resolvePostAuthPath } from "@/modules/workspaces/post-auth";
 import { listProjectsWithReposForUser } from "@/modules/projects/service";
+import { getBillingState } from "@/modules/billing/service";
 import { AppShell } from "@/components/dashboard/app-shell";
 import { AgentStatusPanel } from "@/components/dashboard/agent-status-panel";
+import {
+  AutomationUpsell,
+  shouldShowAutomationUpsell,
+} from "@/components/dashboard/automation-upsell";
 import { ProjectsList } from "@/components/dashboard/projects-list";
 import { isExternalHref, resolveAgentStatusCta } from "@/lib/agent-status";
 
@@ -27,6 +32,12 @@ export default async function DashboardPage({
   const params = await searchParams;
   const projects = await listProjectsWithReposForUser(session.user.id);
   const primary = projects[0];
+  const billing = primary ? await getBillingState(primary.workspaceId) : null;
+  const showUpsell = shouldShowAutomationUpsell({
+    plan: billing?.subscription?.plan,
+    samplePrUsed: billing?.entitlement?.samplePrUsed,
+    agentStatus: primary?.agentStatus,
+  });
 
   const attention: { text: string; href?: string; cta?: string }[] = [];
   if (primary?.agentStatus === "awaiting_approval") {
@@ -77,6 +88,8 @@ export default async function DashboardPage({
         projectId={primary?.id}
         reviewUrl={primary?.latestReviewUrl}
       />
+
+      {showUpsell ? <AutomationUpsell className="mt-6" /> : null}
 
       <div className="mt-8 grid gap-8 lg:grid-cols-2">
         <section>

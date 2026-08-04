@@ -12,6 +12,12 @@ import { confirmIntelligenceProfile, getLatestIntelligence } from "@/modules/int
 import { listAuditLogs } from "@/modules/audit-logs/service";
 import { getBillingState } from "@/modules/billing/service";
 import { resolveGithubReviewUrl } from "@/modules/github/client";
+import {
+  listWorkPrograms,
+  saveWorkPrograms,
+  serializeWorkPrograms,
+} from "@/modules/work-programs/service";
+import { workProgramInputSchema } from "@/modules/work-programs/catalog";
 import { db, schema } from "@/lib/db";
 
 type Params = { params: Promise<{ projectId: string }> };
@@ -23,8 +29,17 @@ export async function GET(_req: Request, { params }: Params) {
     const project = await getProjectForUser(projectId, session.user.id);
     if (!project) return json({ error: "Not found" }, 404);
 
-    const [intelligence, audit, roadmap, actions, logs, billing, latestPullRequest, repository] =
-      await Promise.all([
+    const [
+      intelligence,
+      audit,
+      roadmap,
+      actions,
+      logs,
+      billing,
+      latestPullRequest,
+      repository,
+      workProgramRows,
+    ] = await Promise.all([
       getLatestIntelligence(projectId),
       db.query.seoAudits.findFirst({
         where: eq(schema.seoAudits.projectId, projectId),
@@ -46,6 +61,7 @@ export async function GET(_req: Request, { params }: Params) {
         orderBy: [desc(schema.pullRequests.createdAt)],
       }),
       getProjectRepository(projectId),
+      listWorkPrograms(projectId),
     ]);
 
     const reviewUrl = latestPullRequest
@@ -66,6 +82,7 @@ export async function GET(_req: Request, { params }: Params) {
       actions,
       logs,
       billing,
+      workPrograms: serializeWorkPrograms(workProgramRows),
       latestPullRequest: latestPullRequest
         ? {
             id: latestPullRequest.id,
@@ -84,6 +101,7 @@ export async function GET(_req: Request, { params }: Params) {
 const patchSchema = z.object({
   primarySeoGoal: z.string().optional(),
   publicationMode: z.enum(["review_all", "one_click"]).optional(),
+  workPrograms: z.array(workProgramInputSchema).min(1).optional(),
   confirmIntelligence: z
     .object({
       name: z.string().optional(),
@@ -107,6 +125,10 @@ export async function PATCH(request: Request, { params }: Params) {
     if (!project) return json({ error: "Not found" }, 404);
 
     const body = patchSchema.parse(await request.json());
+
+    if (body.workPrograms) {
+      await saveWorkPrograms(projectId, body.workPrograms);
+    }
 
     if (body.primarySeoGoal || body.publicationMode) {
       await updateProjectSettings(projectId, session.user.id, {
@@ -159,7 +181,12 @@ export async function PATCH(request: Request, { params }: Params) {
     }
 
     const updated = await getProjectForUser(projectId, session.user.id);
-    return json({ project: updated, jobs });
+    const workProgramRows = await listWorkPrograms(projectId);
+    return json({
+      project: updated,
+      jobs,
+      workPrograms: serializeWorkPrograms(workProgramRows),
+    });
   } catch (error) {
     return handleRouteError(error);
   }

@@ -178,6 +178,25 @@ export const projectRepositories = pgTable("project_repositories", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** User-selected work programs with per-program cadence. */
+export const projectWorkPrograms = pgTable(
+  "project_work_programs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    programKey: text("program_key").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    periodDays: integer("period_days").notNull(),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("project_work_programs_unique").on(t.projectId, t.programKey)],
+);
+
 export const projectIntelligenceProfiles = pgTable(
   "project_intelligence_profiles",
   {

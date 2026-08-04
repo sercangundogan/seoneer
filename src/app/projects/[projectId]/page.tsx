@@ -1,11 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/dashboard/app-shell";
 import { AgentStatusPanel } from "@/components/dashboard/agent-status-panel";
+import {
+  AutomationUpsell,
+  shouldShowAutomationUpsell,
+} from "@/components/dashboard/automation-upsell";
+import { WorkProgramsEditor } from "@/components/work-programs/work-programs-editor";
 import { Badge, Button } from "@/components/ui/primitives";
 import { isAgentWorking } from "@/lib/agent-status";
+import {
+  defaultWorkProgramInputs,
+  type PeriodDays,
+  type WorkProgramInput,
+  type WorkProgramKey,
+} from "@/modules/work-programs/catalog";
+
+type WorkProgramApiRow = {
+  programKey: WorkProgramKey;
+  enabled: boolean;
+  periodDays: PeriodDays;
+};
 
 type ProjectPayload = {
   project: {
@@ -27,7 +44,12 @@ type ProjectPayload = {
     decisionSummary: string | null;
   }[];
   logs?: { id: string; summary: string; createdAt: string; action: string }[];
-  billing?: { entitlement?: { samplePrUsed: boolean }; credits?: { balance: number } | null };
+  billing?: {
+    entitlement?: { samplePrUsed: boolean };
+    credits?: { balance: number } | null;
+    subscription?: { plan: string } | null;
+  };
+  workPrograms?: WorkProgramApiRow[];
   latestPullRequest?: {
     id: string;
     prNumber: number | null;
@@ -37,30 +59,54 @@ type ProjectPayload = {
   } | null;
 };
 
+function toInputs(rows: WorkProgramApiRow[] | undefined): WorkProgramInput[] {
+  if (!rows?.length) return defaultWorkProgramInputs();
+  const byKey = new Map(rows.map((r) => [r.programKey, r]));
+  return defaultWorkProgramInputs().map((def) => {
+    const row = byKey.get(def.programKey);
+    return row
+      ? {
+          programKey: row.programKey,
+          enabled: row.enabled,
+          periodDays: row.periodDays,
+        }
+      : def;
+  });
+}
+
 export default function ProjectPage() {
   const params = useParams<{ projectId: string }>();
   const [data, setData] = useState<ProjectPayload | null>(null);
   const [busy, setBusy] = useState(false);
   const [forcePoll, setForcePoll] = useState(false);
+  const [programDraft, setProgramDraft] = useState<WorkProgramInput[]>(defaultWorkProgramInputs());
+  const [savingPrograms, setSavingPrograms] = useState(false);
+  const [programMessage, setProgramMessage] = useState("");
 
   const refresh = useCallback(async () => {
     const res = await fetch(`/api/projects/${params.projectId}`);
-    if (res.ok) setData(await res.json());
+    if (res.ok) {
+      const body = (await res.json()) as ProjectPayload;
+      setData(body);
+      setProgramDraft(toInputs(body.workPrograms));
+    }
   }, [params.projectId]);
 
-  // Initial load
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const res = await fetch(`/api/projects/${params.projectId}`);
-      if (!cancelled && res.ok) setData(await res.json());
+      if (!cancelled && res.ok) {
+        const body = (await res.json()) as ProjectPayload;
+        setData(body);
+        setProgramDraft(toInputs(body.workPrograms));
+      }
     })();
     return () => {
       cancelled = true;
     };
   }, [params.projectId]);
 
-  // Poll while working, or briefly after the user starts a cycle
   const working = isAgentWorking(data?.project?.agentStatus) || forcePoll;
   useEffect(() => {
     if (!working) return;
@@ -70,7 +116,6 @@ export default function ProjectPage() {
     return () => window.clearInterval(interval);
   }, [working, refresh]);
 
-  // Stop forced polling once the agent settles on a non-working status
   useEffect(() => {
     if (!forcePoll) return;
     const status = data?.project?.agentStatus;
@@ -79,18 +124,46 @@ export default function ProjectPage() {
     }
   }, [data?.project?.agentStatus, forcePoll]);
 
-  // Safety: don't poll forever if the job never settles
   useEffect(() => {
     if (!forcePoll) return;
     const timeout = window.setTimeout(() => setForcePoll(false), 180_000);
     return () => window.clearTimeout(timeout);
   }, [forcePoll]);
 
+  const programsDirty = useMemo(() => {
+    const saved = toInputs(data?.workPrograms);
+    return JSON.stringify(saved) !== JSON.stringify(programDraft);
+  }, [data?.workPrograms, programDraft]);
+
+  async function savePrograms() {
+    if (!programsDirty || savingPrograms) return;
+    if (!programDraft.some((p) => p.enabled)) {
+      setProgramMessage("Select at least one program.");
+      return;
+    }
+    setSavingPrograms(true);
+    setProgramMessage("");
+    try {
+      const res = await fetch(`/api/projects/${params.projectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workPrograms: programDraft }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Failed to save programs");
+      await refresh();
+      setProgramMessage("Saved.");
+    } catch (e) {
+      setProgramMessage(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setSavingPrograms(false);
+    }
+  }
+
   async function runCycle() {
     if (busy || forcePoll || isAgentWorking(data?.project?.agentStatus)) return;
     setBusy(true);
     setForcePoll(true);
-    // Optimistic UI so status updates immediately
     setData((prev) =>
       prev
         ? {
@@ -154,11 +227,15 @@ export default function ProjectPage() {
   const { project, intelligence, audit, roadmap, actions, logs, billing, latestPullRequest } =
     data;
   const blocked = project.agentStatus === "blocked";
-  const cycleRunning =
-    busy || forcePoll || isAgentWorking(project.agentStatus);
+  const cycleRunning = busy || forcePoll || isAgentWorking(project.agentStatus);
   const awaitingApproval = project.agentStatus === "awaiting_approval";
   const runDisabled = blocked || cycleRunning || awaitingApproval;
   const reviewUrl = latestPullRequest?.prUrl ?? null;
+  const showUpsell = shouldShowAutomationUpsell({
+    plan: billing?.subscription?.plan,
+    samplePrUsed: billing?.entitlement?.samplePrUsed,
+    agentStatus: project.agentStatus,
+  });
 
   return (
     <AppShell title={project.name}>
@@ -179,7 +256,7 @@ export default function ProjectPage() {
               disabled={runDisabled}
               title={
                 blocked
-                  ? project.agentStatusDetail ?? "Agent is blocked"
+                  ? (project.agentStatusDetail ?? "Agent is blocked")
                   : awaitingApproval
                     ? "Approve the pending update before starting another action"
                     : cycleRunning
@@ -192,6 +269,35 @@ export default function ProjectPage() {
           </>
         }
       />
+
+      {showUpsell ? <AutomationUpsell className="mt-6" /> : null}
+
+      <section className="mt-8 max-w-xl">
+        <h2 className="text-sm font-medium text-[var(--fg-muted)]">Work programs</h2>
+        <p className="mt-1 text-sm text-[var(--fg-muted)]">
+          Choose what Seoneer should do, and how often.
+        </p>
+        <div className="mt-4">
+          <WorkProgramsEditor
+            value={programDraft}
+            onChange={setProgramDraft}
+            disabled={savingPrograms || cycleRunning}
+          />
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Button
+            type="button"
+            onClick={() => void savePrograms()}
+            loading={savingPrograms}
+            disabled={!programsDirty || !programDraft.some((p) => p.enabled)}
+          >
+            Save programs
+          </Button>
+          {programMessage ? (
+            <span className="text-sm text-[var(--fg-muted)]">{programMessage}</span>
+          ) : null}
+        </div>
+      </section>
 
       <div className="mt-8 grid gap-8 lg:grid-cols-2">
         <section>
@@ -210,7 +316,9 @@ export default function ProjectPage() {
               </li>
             ))}
             {!roadmap?.items?.length ? (
-              <li className="text-sm text-[var(--fg-muted)]">Roadmap will appear after the initial audit.</li>
+              <li className="text-sm text-[var(--fg-muted)]">
+                Roadmap will appear after the initial audit.
+              </li>
             ) : null}
           </ul>
         </section>
@@ -264,7 +372,7 @@ export default function ProjectPage() {
             <p>Free sample PR used: {billing?.entitlement?.samplePrUsed ? "yes" : "no"}</p>
             <p>Credits: {billing?.credits?.balance ?? 0}</p>
             <p className="text-[var(--fg-muted)]">
-              Goal: {project.primarySeoGoal ?? "—"} · Changes ship as PRs for your review
+              Focus: {project.primarySeoGoal ?? "—"} · Changes ship as PRs for your review
             </p>
           </div>
         </section>
