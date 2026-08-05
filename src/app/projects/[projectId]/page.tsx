@@ -8,13 +8,14 @@ import {
   AutomationUpsell,
   shouldShowAutomationUpsell,
 } from "@/components/dashboard/automation-upsell";
+import { ProjectSkeleton } from "@/components/dashboard/project-skeleton";
 import {
   SearchConsolePanel,
   type GscConnectionInfo,
 } from "@/components/dashboard/search-console-panel";
 import { WorkProgramsEditor } from "@/components/work-programs/work-programs-editor";
 import { Badge, Button } from "@/components/ui/primitives";
-import { isAgentWorking } from "@/lib/agent-status";
+import { isAgentWorking, isAwaitingPullRequestReview } from "@/lib/agent-status";
 import {
   defaultWorkProgramInputs,
   type PeriodDays,
@@ -84,7 +85,7 @@ export default function ProjectPage() {
     <Suspense
       fallback={
         <AppShell title="Project">
-          <p className="text-sm text-[var(--fg-muted)]">Loading…</p>
+          <ProjectSkeleton />
         </AppShell>
       }
     >
@@ -144,22 +145,32 @@ function ProjectPageInner() {
   }, [params.projectId]);
 
   const working = isAgentWorking(data?.project?.agentStatus) || forcePoll;
+  const awaitingPullRequestReview = isAwaitingPullRequestReview({
+    agentStatus: data?.project?.agentStatus,
+    mergeStatus: data?.latestPullRequest?.mergeStatus,
+  });
+  const shouldPoll = working || awaitingPullRequestReview;
+
   useEffect(() => {
-    if (!working) return;
+    if (!shouldPoll) return;
     void refresh();
     const interval = window.setInterval(() => {
       void refresh();
     }, 2000);
     return () => window.clearInterval(interval);
-  }, [working, refresh]);
+  }, [shouldPoll, refresh]);
 
   useEffect(() => {
     if (!forcePoll) return;
     const status = data?.project?.agentStatus;
-    if (status && !isAgentWorking(status)) {
+    const stillAwaiting = isAwaitingPullRequestReview({
+      agentStatus: status,
+      mergeStatus: data?.latestPullRequest?.mergeStatus,
+    });
+    if (status && !isAgentWorking(status) && !stillAwaiting) {
       setForcePoll(false);
     }
-  }, [data?.project?.agentStatus, forcePoll]);
+  }, [data?.project?.agentStatus, data?.latestPullRequest?.mergeStatus, forcePoll]);
 
   useEffect(() => {
     if (!forcePoll) return;
@@ -251,7 +262,7 @@ function ProjectPageInner() {
   if (!data?.project) {
     return (
       <AppShell title="Project">
-        <p className="text-sm text-[var(--fg-muted)]">Loading…</p>
+        <ProjectSkeleton />
       </AppShell>
     );
   }
@@ -269,7 +280,10 @@ function ProjectPageInner() {
   } = data;
   const blocked = project.agentStatus === "blocked";
   const cycleRunning = busy || forcePoll || isAgentWorking(project.agentStatus);
-  const awaitingApproval = project.agentStatus === "awaiting_approval";
+  const awaitingApproval = isAwaitingPullRequestReview({
+    agentStatus: project.agentStatus,
+    mergeStatus: latestPullRequest?.mergeStatus,
+  });
   const runDisabled = blocked || cycleRunning || awaitingApproval;
   const reviewUrl = latestPullRequest?.prUrl ?? null;
   const showUpsell = shouldShowAutomationUpsell({
@@ -281,7 +295,7 @@ function ProjectPageInner() {
   return (
     <AppShell title={project.name}>
       <AgentStatusPanel
-        status={project.agentStatus}
+        status={awaitingApproval ? "awaiting_approval" : project.agentStatus}
         detail={project.agentStatusDetail}
         fallbackDetail={intelligence?.profile.decisionSummary}
         projectId={project.id}

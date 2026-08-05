@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { env } from "@/lib/env";
 import { db, schema } from "@/lib/db";
 import { eq } from "drizzle-orm";
+import { handleGithubPullRequestClosed } from "@/modules/pull-requests/sync";
 
 function verifySignature(payload: string, signature: string | null): boolean {
   if (!env.GITHUB_APP_WEBHOOK_SECRET || !signature) return !env.GITHUB_APP_WEBHOOK_SECRET;
@@ -46,6 +47,21 @@ export async function POST(request: Request) {
         .update(schema.githubInstallations)
         .set({ suspendedAt: new Date() })
         .where(eq(schema.githubInstallations.installationId, installation.id));
+    }
+  }
+
+  if (event === "pull_request" && payload.action === "closed") {
+    const pullRequest = payload.pull_request as {
+      number: number;
+      merged: boolean;
+    };
+    const repository = payload.repository as { full_name: string };
+    if (repository?.full_name && pullRequest?.number) {
+      await handleGithubPullRequestClosed({
+        repoFullName: repository.full_name,
+        prNumber: pullRequest.number,
+        merged: pullRequest.merged === true,
+      });
     }
   }
 

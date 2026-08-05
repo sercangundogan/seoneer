@@ -19,6 +19,7 @@ import {
 } from "@/modules/work-programs/service";
 import { workProgramInputSchema } from "@/modules/work-programs/catalog";
 import { db, schema } from "@/lib/db";
+import { syncOpenPullRequestForProject } from "@/modules/pull-requests/sync";
 
 type Params = { params: Promise<{ projectId: string }> };
 
@@ -29,7 +30,10 @@ export async function GET(_req: Request, { params }: Params) {
     const project = await getProjectForUser(projectId, session.user.id);
     if (!project) return json({ error: "Not found" }, 404);
 
+    await syncOpenPullRequestForProject(projectId);
+
     const [
+      refreshedProject,
       intelligence,
       audit,
       roadmap,
@@ -41,6 +45,7 @@ export async function GET(_req: Request, { params }: Params) {
       workProgramRows,
       gscConnection,
     ] = await Promise.all([
+      getProjectForUser(projectId, session.user.id),
       getLatestIntelligence(projectId),
       db.query.seoAudits.findFirst({
         where: eq(schema.seoAudits.projectId, projectId),
@@ -68,6 +73,8 @@ export async function GET(_req: Request, { params }: Params) {
       }),
     ]);
 
+    if (!refreshedProject) return json({ error: "Not found" }, 404);
+
     const reviewUrl = latestPullRequest
       ? resolveGithubReviewUrl({
           prUrl: latestPullRequest.prUrl,
@@ -79,7 +86,7 @@ export async function GET(_req: Request, { params }: Params) {
       : null;
 
     return json({
-      project,
+      project: refreshedProject,
       intelligence,
       audit,
       roadmap,

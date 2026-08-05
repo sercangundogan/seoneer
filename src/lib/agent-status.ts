@@ -125,3 +125,13 @@ export function resolveAgentStatusCta(input: {
 export function isExternalHref(href: string): boolean {
   return /^https?:\/\//i.test(href);
 }
+
+/** True while a GitHub PR is still open and waiting for user review. */
+export function isAwaitingPullRequestReview(input: {
+  agentStatus: string | null | undefined;
+  mergeStatus?: string | null;
+}): boolean {
+  return (
+    input.agentStatus === "awaiting_approval" && (input.mergeStatus ?? "open") === "open"
+  );
+}

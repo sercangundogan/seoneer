@@ -7,16 +7,19 @@ import {
   listInstallations,
   listProjectsWithReposForUser,
 } from "@/modules/projects/service";
+import { syncAwaitingPullRequestsForProjects } from "@/modules/pull-requests/sync";
 
 export async function GET() {
   try {
     const session = await requireSession();
     const workspace = await getWorkspaceForUser(session.user.id);
     const projects = await listProjectsWithReposForUser(session.user.id);
+    await syncAwaitingPullRequestsForProjects(projects.map((p) => p.id));
+    const refreshedProjects = await listProjectsWithReposForUser(session.user.id);
     const connectedRepos = workspace
       ? await listConnectedRepoFullNames(workspace.id)
       : [];
-    return json({ projects, connectedRepos });
+    return json({ projects: refreshedProjects, connectedRepos });
   } catch (error) {
     return handleRouteError(error);
   }

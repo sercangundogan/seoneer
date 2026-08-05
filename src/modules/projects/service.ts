@@ -176,6 +176,7 @@ export async function listProjectsWithReposForUser(userId: string): Promise<Proj
       ...p,
       repository: repo ? { fullName: repo.fullName, htmlUrl: repo.htmlUrl } : null,
       latestReviewUrl: reviewUrl,
+      latestPullRequestMergeStatus: latestPr?.mergeStatus ?? null,
     };
   });
 }

@@ -74,6 +74,19 @@ https://www.googleapis.com/auth/webmasters.readonly
 
 No write access to Search Console or Analytics.
 
+## Troubleshooting
+
+### “App is being tested / only approved test users can access” (or Turkish: *Google doğrulama sürecini tamamlamadı*)
+
+The OAuth consent screen is in **Testing**. Google blocks everyone except listed test users — including you, until your account is added.
+
+1. Open [Google Cloud Console → OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent)
+2. Under **Test users**, click **Add users**
+3. Add the **exact Google account email** you use on the consent screen (the one you pick when connecting GSC)
+4. Save, wait ~1 minute, try **Connect Search Console** again
+
+Publishing the app to **Production** lets any Google user connect, but sensitive scopes (including Search Console) often need Google’s verification. For personal/dev use, stay in **Testing** and add test users.
+
 ## Checklist
 
 - [ ] Search Console API enabled

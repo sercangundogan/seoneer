@@ -11,7 +11,7 @@ import {
 } from "@/components/dashboard/automation-upsell";
 import { OverviewSkeleton } from "@/components/dashboard/overview-skeleton";
 import { ProjectsList } from "@/components/dashboard/projects-list";
-import { isExternalHref, resolveAgentStatusCta } from "@/lib/agent-status";
+import { isExternalHref, isAwaitingPullRequestReview, resolveAgentStatusCta } from "@/lib/agent-status";
 
 type Project = {
   id: string;
@@ -21,6 +21,7 @@ type Project = {
   agentStatus: string | null;
   agentStatusDetail?: string | null;
   latestReviewUrl?: string | null;
+  latestPullRequestMergeStatus?: string | null;
   repository?: { fullName: string; htmlUrl: string } | null;
 };
 
@@ -33,7 +34,12 @@ function buildAttention(primary: Project | undefined) {
   const attention: { text: string; href?: string; cta?: string }[] = [];
   if (!primary) return attention;
 
-  if (primary.agentStatus === "awaiting_approval") {
+  if (
+    isAwaitingPullRequestReview({
+      agentStatus: primary.agentStatus,
+      mergeStatus: primary.latestPullRequestMergeStatus,
+    })
+  ) {
     attention.push({
       text: primary.agentStatusDetail ?? "An SEO update is waiting for your approval.",
       href: primary.latestReviewUrl ?? `/projects/${primary.id}`,
@@ -111,6 +117,22 @@ export default function DashboardPageClient() {
   }, [router]);
 
   const primary = projects?.[0];
+  const awaitingPullRequestReview = isAwaitingPullRequestReview({
+    agentStatus: primary?.agentStatus,
+    mergeStatus: primary?.latestPullRequestMergeStatus,
+  });
+
+  useEffect(() => {
+    if (!awaitingPullRequestReview) return;
+    const interval = window.setInterval(() => {
+      void fetch("/api/projects")
+        .then((res) => (res.ok ? res.json() : null))
+        .then((body) => {
+          if (body?.projects) setProjects(body.projects);
+        });
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [awaitingPullRequestReview]);
   const showUpsell = shouldShowAutomationUpsell({
     plan: billing?.subscription?.plan,
     samplePrUsed: billing?.entitlement?.samplePrUsed,
@@ -134,7 +156,9 @@ export default function DashboardPageClient() {
       ) : (
         <div className="animate-fade-up">
           <AgentStatusPanel
-            status={primary?.agentStatus}
+            status={
+              awaitingPullRequestReview ? "awaiting_approval" : primary?.agentStatus
+            }
             detail={primary?.agentStatusDetail}
             projectId={primary?.id}
             reviewUrl={primary?.latestReviewUrl}
