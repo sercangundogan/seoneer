@@ -107,7 +107,9 @@ export function derivePrimarySeoGoal(inputs: WorkProgramInput[]): string {
 export function defaultWorkProgramInputs(): WorkProgramInput[] {
   return WORK_PROGRAM_CATALOG.map((p) => ({
     programKey: p.key,
-    enabled: p.key === "seo_health" || p.key === "improve_content",
+    // First-run / onboarding defaults: new posts when a blog exists, else technical SEO.
+    // improve_content is opt-in so free sample PRs are not stuck on title/description patches.
+    enabled: p.key === "seo_health" || p.key === "publish_posts",
     periodDays: p.defaultPeriodDays,
   }));
 }

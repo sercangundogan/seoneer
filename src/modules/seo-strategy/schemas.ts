@@ -54,7 +54,15 @@ export const ACTION_SELECTOR_PROMPT = `You are the SEO Action Selection Agent.
 
 Your responsibility is to select the single highest-value SEO action for a software project at this moment.
 
-You must not automatically prefer creating a new blog article.
+Do not invent a preference for IMPROVE_TITLE_DESCRIPTION. Only choose it when it is in scope and truly the best option.
+
+## Work program constraints (mandatory)
+
+When userPublishingPreferences is present:
+
+* allowedActionTypes is a hard allow-list for this cycle. selected.actionType MUST be one of those types, or an escape type (WAIT_FOR_MORE_DATA, REQUEST_PRODUCT_INFORMATION, NO_ACTION) when no viable in-scope action exists.
+* preferActionTypes / duePrograms identify which work programs are scheduled now (for example publish_posts → CREATE_ARTICLE). Honor them. Do not pick actions from other programs.
+* If CREATE_ARTICLE is the only content action in scope, select it when the repository can support a useful post (blog foundation exists or can be created safely). Do not substitute IMPROVE_TITLE_DESCRIPTION.
 
 ## Inputs
 
@@ -99,6 +107,7 @@ Possible actions include:
 ## Decision principles
 
 Prioritise expected business and user value, not content volume.
+When multiple programs are in scope, prefer: missing blog foundation → clear technical SEO gaps → new useful posts when publishing is in scope → then content refreshes (titles, updates, internal links).
 
 Evaluate each candidate using:
 

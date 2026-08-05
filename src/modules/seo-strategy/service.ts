@@ -17,8 +17,12 @@ import {
   reviewOutputSchema,
   writerOutputSchema,
   type ActionSelection,
-  type SeoActionType,
 } from "@/modules/seo-strategy/schemas";
+import {
+  clampSelectionToAllowed,
+  heuristicSelectAction,
+  resolveCycleActionTypes,
+} from "@/modules/seo-strategy/action-selection";
 import type { z } from "zod";
 import {
   gatesPassed,
@@ -61,12 +65,6 @@ import {
   getEnabledWorkPrograms,
   preferredDueProgramKeys,
 } from "@/modules/work-programs/service";
-
-const ESCAPE_ACTION_TYPES: SeoActionType[] = [
-  "WAIT_FOR_MORE_DATA",
-  "REQUEST_PRODUCT_INFORMATION",
-  "NO_ACTION",
-];
 
 export async function runInitialAudit(projectId: string) {
   const project = await db.query.projects.findFirst({
@@ -242,14 +240,22 @@ export async function selectAction(
   if (preferParsed?.success) {
     const enabled = await getEnabledWorkPrograms(projectId);
     if (enabled.some((r) => r.programKey === preferParsed.data)) {
+      // Manual "Run now" hard-scopes this cycle to that program only.
       preferredKeys = [preferParsed.data as WorkProgramKey];
     }
   }
   const preferredTypes =
     preferredKeys.length > 0 ? actionTypesForPrograms(preferredKeys) : allowed;
+  // Due / manually selected programs are a hard allow-list for this cycle.
+  // Do not fall back to every enabled program (that caused publish_posts runs
+  // to ship IMPROVE_TITLE_DESCRIPTION from improve_content).
+  const constrainedTypes = resolveCycleActionTypes(
+    preferredKeys,
+    preferredTypes,
+    allowed,
+  );
 
-  const heuristic = () =>
-    heuristicSelectAction(profile, audit?.findings, preferredTypes ?? allowed);
+  const heuristic = () => heuristicSelectAction(profile, audit?.findings, constrainedTypes);
 
   if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
     try {
@@ -273,18 +279,16 @@ export async function selectAction(
             summary: a.decisionSummary,
           })),
           userPublishingPreferences: {
-            allowedActionTypes: allowed,
+            allowedActionTypes: constrainedTypes,
             preferActionTypes: preferredTypes,
             duePrograms: preferredKeys,
+            hardConstraint: true,
+            allEnabledActionTypes: allowed,
           },
         }),
         schema: actionSelectionSchema,
       });
-      return clampSelectionToAllowed(
-        result.object,
-        allowed,
-        () => heuristicSelectAction(profile, audit?.findings, preferredTypes ?? allowed),
-      );
+      return clampSelectionToAllowed(result.object, constrainedTypes, heuristic);
     } catch (error) {
       console.error("Action selection AI failed; using heuristic", error);
       return heuristic();
@@ -292,176 +296,6 @@ export async function selectAction(
   }
 
   return heuristic();
-}
-
-function clampSelectionToAllowed(
-  selection: ActionSelection,
-  allowed: SeoActionType[] | null,
-  fallback: () => ActionSelection,
-): ActionSelection {
-  if (!allowed || allowed.length === 0) return selection;
-  const ok = new Set<SeoActionType>([...allowed, ...ESCAPE_ACTION_TYPES]);
-  if (ok.has(selection.selected.actionType)) return selection;
-  return fallback();
-}
-
-function heuristicSelectAction(
-  profile: ProjectIntelligenceProfile | undefined,
-  findings: unknown,
-  allowed: SeoActionType[] | null = null,
-): ActionSelection {
-  const f = (findings ?? {}) as {
-    technical?: string[];
-    gscConnected?: boolean;
-    keywordOpportunities?: { query: string; score: number }[];
-  };
-
-  const can = (type: SeoActionType) =>
-    !allowed || allowed.length === 0 || allowed.includes(type);
-
-  if (!profile?.website.blogExists && can("BUILD_BLOG_FOUNDATION")) {
-    return {
-      candidates: [
-        { actionType: "BUILD_BLOG_FOUNDATION", score: 88, rationale: "No blog detected" },
-        { actionType: "NO_ACTION", score: 10, rationale: "Idle" },
-      ],
-      selected: {
-        actionType: "BUILD_BLOG_FOUNDATION",
-        target: "content/blog",
-        primaryQueryOrIssue: "Missing blog foundation",
-        whyNow: "Cannot publish sustainable content without a blog structure",
-        evidence: ["website.blogExists=false"],
-        expectedUserValue: "Readable, indexable articles in a clear structure",
-        expectedBusinessValue: "Enables future high-value content actions",
-        requiredRepositoryChanges: ["Add MDX blog route and sample layout"],
-        requiredResearch: [],
-        risks: ["Touches app routing — human review mandatory"],
-        confidence: 0.75,
-        qualityGates: ["build", "path_policy"],
-        estimatedCreditCost: CREDIT_WEIGHTS.BUILD_BLOG_FOUNDATION,
-        humanReviewMandatory: true,
-      },
-      decisionSummary:
-        "Selected BUILD_BLOG_FOUNDATION because no blog architecture was detected.",
-    };
-  }
-
-  if (can("FIX_TECHNICAL_SEO") && f.technical?.length) {
-    return {
-      candidates: [
-        {
-          actionType: "FIX_TECHNICAL_SEO",
-          score: 75,
-          rationale: "Technical foundations need attention",
-        },
-      ],
-      selected: {
-        actionType: "FIX_TECHNICAL_SEO",
-        target: f.technical[0] ?? "technical",
-        primaryQueryOrIssue: f.technical[0] ?? "Technical SEO gaps",
-        whyNow: "Technical foundations are missing",
-        evidence: [`issues=${f.technical.length}`],
-        expectedUserValue: "Clearer indexing and crawl signals",
-        expectedBusinessValue: "Safer future content investment",
-        requiredRepositoryChanges: ["Update sitemap/robots/metadata"],
-        requiredResearch: [],
-        risks: ["Touches site-wide config"],
-        confidence: 0.65,
-        qualityGates: ["metadata", "build"],
-        estimatedCreditCost: CREDIT_WEIGHTS.FIX_TECHNICAL_SEO,
-        humanReviewMandatory: true,
-      },
-      decisionSummary: "Selected FIX_TECHNICAL_SEO based on detected foundation gaps.",
-    };
-  }
-
-  if (can("IMPROVE_TITLE_DESCRIPTION")) {
-    const topKw = f.keywordOpportunities?.[0];
-    return {
-      candidates: [
-        {
-          actionType: "IMPROVE_TITLE_DESCRIPTION",
-          score: 72,
-          rationale: "Low-risk CTR improvement",
-        },
-        ...(can("UPDATE_ARTICLE")
-          ? [
-              {
-                actionType: "UPDATE_ARTICLE" as const,
-                score: 65,
-                rationale: "Existing page improvement",
-              },
-            ]
-          : []),
-      ],
-      selected: {
-        actionType: "IMPROVE_TITLE_DESCRIPTION",
-        target: profile?.website.contentPages[0] ?? "blog",
-        primaryQueryOrIssue: topKw?.query ?? "Low CTR pages",
-        whyNow:
-          "Improving titles/descriptions is safer than publishing new content without strong evidence",
-        evidence: topKw ? [`gsc query: ${topKw.query}`] : ["content pages present"],
-        expectedUserValue: "Clearer snippets in search results",
-        expectedBusinessValue: "Potential CTR lift on existing impressions",
-        requiredRepositoryChanges: ["Update frontmatter title/description"],
-        requiredResearch: ["Confirm current metadata"],
-        risks: ["Title changes need brand tone check"],
-        confidence: 0.68,
-        qualityGates: ["metadata", "brand_tone"],
-        estimatedCreditCost: 1,
-        humanReviewMandatory: false,
-      },
-      decisionSummary:
-        "Selected IMPROVE_TITLE_DESCRIPTION as the highest-value safe action over creating a new article.",
-    };
-  }
-
-  if (can("CREATE_ARTICLE")) {
-    return {
-      candidates: [
-        { actionType: "CREATE_ARTICLE", score: 70, rationale: "Publishing program enabled" },
-      ],
-      selected: {
-        actionType: "CREATE_ARTICLE",
-        target: "content/blog",
-        primaryQueryOrIssue: f.keywordOpportunities?.[0]?.query ?? "New helpful article",
-        whyNow: "User enabled publish_posts and no higher-priority fix is selected",
-        evidence: ["work program: publish_posts"],
-        expectedUserValue: "Fresh, useful content",
-        expectedBusinessValue: "Organic discovery for a relevant topic",
-        requiredRepositoryChanges: ["Add MDX article"],
-        requiredResearch: ["Topic brief"],
-        risks: ["Needs human review before merge"],
-        confidence: 0.6,
-        qualityGates: ["content_quality", "brand_tone"],
-        estimatedCreditCost: CREDIT_WEIGHTS.CREATE_ARTICLE,
-        humanReviewMandatory: true,
-      },
-      decisionSummary: "Selected CREATE_ARTICLE based on enabled publishing program.",
-    };
-  }
-
-  const fallbackType = (allowed?.[0] ?? "NO_ACTION") as SeoActionType;
-  return {
-    candidates: [{ actionType: fallbackType, score: 40, rationale: "Constrained by work programs" }],
-    selected: {
-      actionType: fallbackType,
-      target: "project",
-      primaryQueryOrIssue: "Work program constraint",
-      whyNow: "Respecting the user’s selected work programs",
-      evidence: allowed ? [`allowed=${allowed.join(",")}`] : [],
-      expectedUserValue: "Stay within selected programs",
-      expectedBusinessValue: "Predictable automation",
-      requiredRepositoryChanges: [],
-      requiredResearch: [],
-      risks: [],
-      confidence: 0.5,
-      qualityGates: [],
-      estimatedCreditCost: CREDIT_WEIGHTS[fallbackType] ?? 0,
-      humanReviewMandatory: true,
-    },
-    decisionSummary: `Selected ${fallbackType} within enabled work programs.`,
-  };
 }
 
 export async function runActionCycle(

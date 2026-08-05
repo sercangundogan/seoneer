@@ -14,6 +14,15 @@ import {
   actionSelectionSchema,
   CREDIT_WEIGHTS,
 } from "@/modules/seo-strategy/schemas";
+import {
+  clampSelectionToAllowed,
+  heuristicSelectAction,
+  resolveCycleActionTypes,
+} from "@/modules/seo-strategy/action-selection";
+import {
+  actionTypesForPrograms,
+  defaultWorkProgramInputs,
+} from "@/modules/work-programs/catalog";
 import { sha256 } from "@/lib/crypto";
 import {
   applyMetadataPatches,
@@ -232,6 +241,81 @@ describe("agent schemas", () => {
     expect(CREDIT_WEIGHTS.CREATE_ARTICLE).toBeGreaterThan(
       CREDIT_WEIGHTS.IMPROVE_TITLE_DESCRIPTION,
     );
+  });
+});
+
+describe("work program action selection", () => {
+  it("defaults onboarding to publish_posts + seo_health", () => {
+    const enabled = defaultWorkProgramInputs()
+      .filter((p) => p.enabled)
+      .map((p) => p.programKey)
+      .sort();
+    expect(enabled).toEqual(["publish_posts", "seo_health"]);
+  });
+
+  it("scopes publish_posts to CREATE_ARTICLE only", () => {
+    expect(actionTypesForPrograms(["publish_posts"])).toEqual(["CREATE_ARTICLE"]);
+  });
+
+  it("hard-constrains the cycle to preferred program types", () => {
+    const preferred = actionTypesForPrograms(["publish_posts"]);
+    const allEnabled = actionTypesForPrograms(["publish_posts", "improve_content"]);
+    expect(resolveCycleActionTypes(["publish_posts"], preferred, allEnabled)).toEqual([
+      "CREATE_ARTICLE",
+    ]);
+  });
+
+  it("picks CREATE_ARTICLE when publish_posts is in scope and a blog exists", () => {
+    const selection = heuristicSelectAction(
+      {
+        website: { blogExists: true, contentPages: ["content/blog/hello.mdx"] },
+      } as never,
+      {},
+      ["CREATE_ARTICLE", "IMPROVE_TITLE_DESCRIPTION"],
+    );
+    expect(selection.selected.actionType).toBe("CREATE_ARTICLE");
+  });
+
+  it("picks FIX_TECHNICAL_SEO when technical gaps exist", () => {
+    const selection = heuristicSelectAction(
+      { website: { blogExists: true, contentPages: [] } } as never,
+      { technical: ["Missing sitemap"] },
+      ["CREATE_ARTICLE", "FIX_TECHNICAL_SEO", "IMPROVE_TITLE_DESCRIPTION"],
+    );
+    expect(selection.selected.actionType).toBe("FIX_TECHNICAL_SEO");
+  });
+
+  it("rejects out-of-scope AI selections when running publish_posts", () => {
+    const outOfScope = actionSelectionSchema.parse({
+      candidates: [
+        { actionType: "IMPROVE_TITLE_DESCRIPTION", score: 90, rationale: "bias" },
+      ],
+      selected: {
+        actionType: "IMPROVE_TITLE_DESCRIPTION",
+        target: "blog",
+        primaryQueryOrIssue: "CTR",
+        whyNow: "soft preference ignored",
+        evidence: [],
+        expectedUserValue: "x",
+        expectedBusinessValue: "y",
+        requiredRepositoryChanges: [],
+        requiredResearch: [],
+        risks: [],
+        confidence: 0.9,
+        qualityGates: [],
+        estimatedCreditCost: 1,
+        humanReviewMandatory: false,
+      },
+      decisionSummary: "Wrong program",
+    });
+    const clamped = clampSelectionToAllowed(outOfScope, ["CREATE_ARTICLE"], () =>
+      heuristicSelectAction(
+        { website: { blogExists: true, contentPages: ["a.mdx"] } } as never,
+        {},
+        ["CREATE_ARTICLE"],
+      ),
+    );
+    expect(clamped.selected.actionType).toBe("CREATE_ARTICLE");
   });
 });
 
