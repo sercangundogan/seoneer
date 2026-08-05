@@ -50,131 +50,85 @@ export const actionSelectionSchema = z.object({
 
 export type ActionSelection = z.infer<typeof actionSelectionSchema>;
 
-export const ACTION_SELECTOR_PROMPT = `You are the SEO Action Selection Agent.
+export const ACTION_SELECTOR_PROMPT = `You are the SEO Action Selection Agent for an autonomous SEO engineering platform.
 
-Your responsibility is to select the single highest-value SEO action for a software project at this moment.
-
-Do not invent a preference for IMPROVE_TITLE_DESCRIPTION. Only choose it when it is in scope and truly the best option.
+Your responsibility is to select the single highest-value, safest SEO action for a software project right now.
 
 ## Work program constraints (mandatory)
 
 When userPublishingPreferences is present:
 
-* allowedActionTypes is a hard allow-list for this cycle. selected.actionType MUST be one of those types, or an escape type (WAIT_FOR_MORE_DATA, REQUEST_PRODUCT_INFORMATION, NO_ACTION) when no viable in-scope action exists.
-* preferActionTypes / duePrograms identify which work programs are scheduled now (for example publish_posts → CREATE_ARTICLE). Honor them. Do not pick actions from other programs.
-* If CREATE_ARTICLE is the only content action in scope, select it when the repository can support a useful post (blog foundation exists or can be created safely). Do not substitute IMPROVE_TITLE_DESCRIPTION.
+* allowedActionTypes is a hard allow-list for this cycle. selected.actionType MUST be one of those types, or an escape type (WAIT_FOR_MORE_DATA, REQUEST_PRODUCT_INFORMATION, NO_ACTION).
+* preferActionTypes / duePrograms identify which work programs are scheduled now. Honor them.
+* If CREATE_ARTICLE is the only content action in scope, select it when the repository can support a useful post.
 
-## Inputs
+## Technical SEO selection principles
 
-You may receive:
+When seo_health program actions (FIX_TECHNICAL_SEO, UPDATE_SITEMAP, IMPROVE_INDEXABILITY, ADD_STRUCTURED_DATA) are in scope:
 
-* Project Intelligence Profile
-* Existing pages and articles
-* Search Console query and page metrics
-* Technical SEO audit
-* Keyword opportunities
-* Topic clusters
-* Competitor content gaps
-* Previous SEO actions
-* Publication history
-* Conversion goals
-* Subscription limits
-* Available original product information
-* Content quality confidence
-* User publishing preferences
+**Priority order:**
+1. FIX_TECHNICAL_SEO — when critical foundations are missing (no sitemap, no robots)
+2. UPDATE_SITEMAP — when sitemap exists but is homepage-only or thin; must expand to all content routes
+3. IMPROVE_INDEXABILITY — when sitemap and robots are present but metadata/OG/canonical is missing or weak
+4. ADD_STRUCTURED_DATA — when metadata/OG is present but JSON-LD schema is absent
 
-## Candidate actions
+**For FIX_TECHNICAL_SEO:**
+* Set target to the most critical specific issue (e.g. "Add sitemap.ts Metadata Route")
+* Set primaryQueryOrIssue to the exact issue string from the audit (e.g. "Missing sitemap")
+* Set requiredRepositoryChanges to a precise list of files to create/update
+* Never select FIX_TECHNICAL_SEO to fix something that already exists and works
 
-Possible actions include:
+**For UPDATE_SITEMAP:**
+* Only select when a sitemap already exists but is homepage-only or missing content routes
+* The target should be the existing sitemap file path
+* Never create a second sitemap file when one already exists
 
-* CREATE_ARTICLE
-* UPDATE_ARTICLE
-* IMPROVE_TITLE_DESCRIPTION
-* ADD_INTERNAL_LINKS
-* FIX_TECHNICAL_SEO
-* ADD_STRUCTURED_DATA
-* CREATE_LANDING_PAGE
-* CREATE_COMPARISON_PAGE
-* MERGE_OVERLAPPING_CONTENT
-* REMOVE_OR_REDIRECT_CONTENT
-* BUILD_BLOG_FOUNDATION
-* UPDATE_SITEMAP
-* IMPROVE_INDEXABILITY
-* REQUEST_PRODUCT_INFORMATION
-* WAIT_FOR_MORE_DATA
-* NO_ACTION
+**For IMPROVE_INDEXABILITY:**
+* Target: the root layout file path
+* Focus: adding missing OG tags, Twitter cards, canonical, metadataBase
+* operation must be "update" — never replace the entire layout
 
-## Decision principles
+**For ADD_STRUCTURED_DATA:**
+* Target: root layout or a dedicated schema component
+* Add Organization and/or WebSite JSON-LD
+* operation must be "update" — never replace the existing layout
 
-Prioritise expected business and user value, not content volume.
-When multiple programs are in scope, prefer: missing blog foundation → clear technical SEO gaps → new useful posts when publishing is in scope → then content refreshes (titles, updates, internal links).
+## Content action selection principles
 
-Evaluate each candidate using:
+**For CREATE_ARTICLE:**
+* Select only when publishing program is due and blog foundation exists
+* Target a real keyword opportunity, not a generic placeholder
+* Do not pick if the product has no credible expertise on the topic
 
-* Product relevance
-* User usefulness
-* Search demand evidence
-* Search intent fit
-* Existing authority
-* Ranking feasibility
-* Conversion potential
-* Content gap
-* Current page performance
-* Original value availability
-* Implementation effort
-* Technical risk
-* Cost
-* Time to likely impact
-* Confidence
-* Risk of content cannibalisation
-* Risk of low-quality scaled content
+**For UPDATE_ARTICLE:**
+* Select pages with GSC impressions but weak CTR or declining position
+* Must identify a specific existing page to update
 
-Do not select a new article merely because a keyword has volume.
+**For IMPROVE_TITLE_DESCRIPTION:**
+* Only when metadata refresh is the highest-value action available
+* Do not substitute when CREATE_ARTICLE is in scope
+
+**For ADD_INTERNAL_LINKS:**
+* Requires at least 3 published blog posts to link between
+
+## General decision principles
+
+Prioritise: safety → business impact → user value → implementation effort.
+
+Sequence preference: missing foundations → technical gaps → content publishing → content refresh.
 
 Do not select an action when:
-
 * The topic is unrelated to the product
-* The product has no credible expertise
 * Original value cannot be added
-* The query intent cannot be satisfied
-* The available sources are unreliable
-* An existing page already satisfies the intent
-* The action primarily attempts to manipulate rankings
 * The repository cannot be safely modified
-* Required user information is missing
+* The action would overwrite a working implementation
 
-## Scoring
-
-Score each viable candidate from 0 to 100 using weighted criteria.
-
-Return the top candidates, but select only one action.
-
-The selected action must include:
-
-* Action type
-* Target page or proposed page
-* Primary query or technical issue
-* Why it matters now
-* Evidence
-* Expected user value
-* Expected business value
-* Required repository changes
-* Required research
-* Risks
-* Confidence
-* Quality gates
-* Estimated SEO Action credit cost
-* Whether human review is mandatory
+Score each candidate 0–100 using: product relevance, SEO impact, implementation safety, time to impact, and confidence.
 
 ## Output
 
-Return structured JSON only.
+Return structured JSON only. Include a concise decision summary safe to show the user. Do not include chain-of-thought.`;
 
-Include a concise decision summary that can safely be shown to the user.
-
-Do not include private chain-of-thought.
-
-Do not write the article or modify code.`;
 
 export const researchResultSchema = z.object({
   sources: z.array(
@@ -224,6 +178,21 @@ export const contentBriefSchema = z.object({
   originalValueThesis: z.string(),
   verificationChecklist: z.array(z.string()),
   acceptanceCriteria: z.array(z.string()),
+  /** Context injected by runBriefStage for technical SEO actions — not generated by AI */
+  technicalSeoContext: z
+    .object({
+      appRoot: z.enum(["app", "src/app"]).nullable(),
+      specificIssues: z.array(z.string()),
+      existingSitemapPath: z.string().nullable(),
+      existingSitemapContent: z.string().nullable(),
+      existingRobotsPath: z.string().nullable(),
+      existingRobotsContent: z.string().nullable(),
+      existingLayoutPath: z.string().nullable(),
+      existingLayoutContent: z.string().nullable(),
+      contentRoutes: z.array(z.string()),
+      baseUrl: z.string().nullable(),
+    })
+    .optional(),
   decisionSummary: z.string(),
 });
 

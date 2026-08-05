@@ -27,6 +27,7 @@ import type { z } from "zod";
 import {
   gatesPassed,
   runContentQualityGates,
+  runTechnicalSeoGates,
 } from "@/modules/technical-seo/quality-gates";
 import { classifyPath } from "@/modules/github/path-policy";
 import {
@@ -638,6 +639,61 @@ async function runBriefStage(
     decisionSummary: `Brief prepared for ${selection.selected.actionType}`,
   };
 
+  // For technical SEO actions, inject file context so the writer can make informed decisions
+  const isTechSeoAction = [
+    "FIX_TECHNICAL_SEO",
+    "UPDATE_SITEMAP",
+    "IMPROVE_INDEXABILITY",
+    "ADD_STRUCTURED_DATA",
+  ].includes(selection.selected.actionType);
+
+  if (isTechSeoAction && profile) {
+    const seoMeta = profile.seo.sitemap as Record<string, unknown>;
+    const robotsMeta = profile.seo.robots as Record<string, unknown>;
+    const layoutMeta = profile.seo.metadata as Record<string, unknown>;
+
+    const existingSitemapPath = (seoMeta?.["path"] as string | null) ?? null;
+    const existingRobotsPath = (robotsMeta?.["path"] as string | null) ?? null;
+    const existingLayoutPath = (layoutMeta?.["path"] as string | null) ?? null;
+
+    // Detect app root from profile data
+    const appRootRaw =
+      existingSitemapPath?.startsWith("src/app/") ||
+      existingRobotsPath?.startsWith("src/app/") ||
+      existingLayoutPath?.startsWith("src/app/")
+        ? "src/app"
+        : existingSitemapPath?.startsWith("app/") ||
+            existingRobotsPath?.startsWith("app/") ||
+            existingLayoutPath?.startsWith("app/")
+          ? "app"
+          : null;
+    const appRoot = (appRootRaw ?? "src/app") as "app" | "src/app";
+
+    const [existingSitemapContent, existingRobotsContent, existingLayoutContent] = await Promise.all([
+      existingSitemapPath ? fetchExistingFile(projectId, existingSitemapPath) : Promise.resolve(null),
+      existingRobotsPath ? fetchExistingFile(projectId, existingRobotsPath) : Promise.resolve(null),
+      existingLayoutPath ? fetchExistingFile(projectId, existingLayoutPath) : Promise.resolve(null),
+    ]);
+
+    const contentRoutes = await listBlogContentPaths(projectId);
+
+    brief = {
+      ...brief,
+      technicalSeoContext: {
+        appRoot,
+        specificIssues: profile.seo.issues ?? [],
+        existingSitemapPath,
+        existingSitemapContent: existingSitemapContent ? existingSitemapContent.slice(0, 4000) : null,
+        existingRobotsPath,
+        existingRobotsContent: existingRobotsContent ? existingRobotsContent.slice(0, 2000) : null,
+        existingLayoutPath,
+        existingLayoutContent: existingLayoutContent ? existingLayoutContent.slice(0, 8000) : null,
+        contentRoutes,
+        baseUrl: null,
+      },
+    };
+  }
+
   if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
     try {
       const result = await generateStructured({
@@ -646,7 +702,8 @@ async function runBriefStage(
         prompt: JSON.stringify({ selection, research, blogDir }),
         schema: contentBriefSchema,
       });
-      brief = result.object;
+      // Preserve the injected technical context — never let the AI overwrite it
+      brief = { ...result.object, technicalSeoContext: brief.technicalSeoContext };
     } catch {
       // heuristic brief
     }
@@ -921,6 +978,479 @@ Rules:
   };
 }
 
+/** Fetch existing file content from the project repo (returns null if not found). */
+async function fetchExistingFile(
+  projectId: string,
+  filePath: string,
+): Promise<string | null> {
+  const repo = await getProjectRepository(projectId);
+  const installation = await getInstallationForProject(projectId);
+  if (!repo || !installation) return null;
+  return getFileContent({
+    installationId: installation.installationId,
+    owner: repo.owner,
+    repo: repo.name,
+    path: filePath,
+    ref: repo.defaultBranch,
+  });
+}
+
+/** Build a human-readable list of content URLs for the sitemap from known blog paths. */
+function buildSitemapUrlList(contentPaths: string[], base: string): string {
+  if (contentPaths.length === 0) return "";
+  return contentPaths
+    .slice(0, 60)
+    .map((p) => {
+      const href = contentPathToHref(p);
+      return `  { url: \`\${base}${href}\`, lastModified: new Date() },`;
+    })
+    .join("\n");
+}
+
+/**
+ * Dedicated writer for FIX_TECHNICAL_SEO and UPDATE_SITEMAP.
+ * Reads existing files before writing — never blindly overwrites.
+ */
+async function writeTechnicalSeoPatches(
+  projectId: string,
+  brief: z.infer<typeof contentBriefSchema>,
+  profile: ProjectIntelligenceProfile | undefined,
+): Promise<z.infer<typeof writerOutputSchema>> {
+  const ctx = brief.technicalSeoContext;
+  const appRoot = ctx?.appRoot ?? (profile?.seo?.sitemap as Record<string, unknown> | undefined)?.["path"]
+    ? (/^src\/app\//.test(String((profile?.seo?.sitemap as Record<string, unknown>)?.["path"])) ? "src/app" : "app")
+    : "src/app";
+
+  const issues = ctx?.specificIssues ?? (brief.originalValueThesis ? [brief.originalValueThesis] : []);
+  const contentRoutes = ctx?.contentRoutes ?? [];
+  const baseUrlToken = 'process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"';
+
+  // Resolve what already exists
+  const sitemapInfo = profile?.seo?.sitemap as Record<string, unknown> | undefined;
+  const robotsInfo = profile?.seo?.robots as Record<string, unknown> | undefined;
+  const existingSitemapPath = ctx?.existingSitemapPath ?? (sitemapInfo?.["path"] as string | null) ?? null;
+  const existingRobotsPath = ctx?.existingRobotsPath ?? (robotsInfo?.["path"] as string | null) ?? null;
+  const existingSitemapContent = ctx?.existingSitemapContent;
+  const existingRobotsContent = ctx?.existingRobotsContent;
+
+  const sitemapPresent = sitemapInfo?.["kind"] !== undefined
+    ? sitemapInfo["kind"] !== "none"
+    : existingSitemapPath !== null;
+  const robotsPresent = robotsInfo?.["kind"] !== undefined
+    ? robotsInfo["kind"] !== "none"
+    : existingRobotsPath !== null;
+
+  const files: z.infer<typeof writerOutputSchema>["files"] = [];
+  const summaryParts: string[] = [];
+
+  // If sitemap is missing → create a comprehensive one
+  const needsSitemap =
+    brief.actionType === "FIX_TECHNICAL_SEO"
+      ? !sitemapPresent
+      : brief.actionType === "UPDATE_SITEMAP";
+
+  if (needsSitemap && !sitemapPresent) {
+    const sitemapPath = `${appRoot}/sitemap.ts`;
+    const urlEntries = buildSitemapUrlList(contentRoutes, "${base}");
+    files.push({
+      path: sitemapPath,
+      operation: "create",
+      content: `import type { MetadataRoute } from "next";
+${contentRoutes.length > 0 ? '\nimport { getAllContentRoutes } from "@/lib/content";' : ""}
+
+export default function sitemap(): MetadataRoute.Sitemap {
+  const base = ${baseUrlToken};
+  return [
+    { url: base, lastModified: new Date(), changeFrequency: "weekly", priority: 1 },
+${urlEntries}
+  ].filter(Boolean) as MetadataRoute.Sitemap;
+}
+`,
+    });
+    summaryParts.push(`Created ${sitemapPath} with ${contentRoutes.length} content routes`);
+  }
+
+  // If sitemap is homepage-only and we are in UPDATE_SITEMAP → update it
+  if (brief.actionType === "UPDATE_SITEMAP" && sitemapPresent && existingSitemapPath) {
+    const existingContent = existingSitemapContent ?? (await fetchExistingFile(projectId, existingSitemapPath));
+    if (existingContent) {
+      const urlEntries = buildSitemapUrlList(contentRoutes, "${base}");
+      // Use LLM if available, otherwise build from known routes
+      if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
+        try {
+          const result = await generateStructured({
+            tier: "strong",
+            system: `You are the Writer agent specializing in technical SEO.
+TASK: Expand an existing Next.js sitemap.ts to include all content routes.
+
+RULES:
+- operation MUST be "update"
+- ALWAYS include the COMPLETE updated file content — never a diff or partial
+- Preserve the existing generation strategy and structure
+- Add all routes from contentRoutes to the returned URL list
+- Never remove existing URLs
+- Keep the file as TypeScript (import type { MetadataRoute } from "next")
+- The base URL uses: ${baseUrlToken}
+- Do not add imaginary routes — only use the provided contentRoutes list`,
+            prompt: JSON.stringify({
+              existingFile: { path: existingSitemapPath, content: existingContent },
+              contentRoutes,
+              baseUrlToken,
+            }),
+            schema: writerOutputSchema,
+          });
+          const sitemapFile = result.object.files.find((f) => f.path.includes("sitemap"));
+          if (sitemapFile) {
+            files.push(sitemapFile);
+            summaryParts.push(`Updated ${existingSitemapPath} with ${contentRoutes.length} content routes`);
+          }
+        } catch {
+          // fallback: inline expansion
+        }
+      }
+
+      // Heuristic fallback if LLM failed or not configured
+      if (!files.some((f) => f.path.includes("sitemap")) && contentRoutes.length > 0) {
+        const urlEntries2 = buildSitemapUrlList(contentRoutes, "${base}");
+        // Check if the existing sitemap already has a dynamic pattern; if so, leave it
+        const hasDynamic = /\.map\s*\(|for\s*\(|generateSitemaps/.test(existingContent);
+        if (!hasDynamic) {
+          // Insert new entries before the closing bracket
+          const expanded = existingContent.replace(
+            /(return\s*\[)([\s\S]*?)(\];?\s*\})/,
+            (_, open, inner, close) => {
+              const hasBase = /url:\s*(base|`\$\{base\}`)/.test(inner);
+              return `${open}${hasBase ? inner.trimEnd() + "\n" : `\n  { url: base, lastModified: new Date() },\n`}${urlEntries2}\n  ${close}`;
+            },
+          );
+          if (expanded !== existingContent) {
+            files.push({ path: existingSitemapPath, operation: "update", content: expanded });
+            summaryParts.push(`Expanded ${existingSitemapPath} with ${contentRoutes.length} routes`);
+          }
+        } else {
+          summaryParts.push(`Sitemap at ${existingSitemapPath} already uses dynamic generation — skipped`);
+        }
+      }
+    }
+  }
+
+  // If robots missing → create it
+  if (!robotsPresent && issues.some((i) => /robot/i.test(i))) {
+    const robotsPath = `${appRoot}/robots.ts`;
+    files.push({
+      path: robotsPath,
+      operation: "create",
+      content: `import type { MetadataRoute } from "next";
+
+export default function robots(): MetadataRoute.Robots {
+  const base = ${baseUrlToken};
+  return {
+    rules: [{ userAgent: "*", allow: "/" }],
+    sitemap: \`\${base}/sitemap.xml\`,
+  };
+}
+`,
+    });
+    summaryParts.push(`Created ${robotsPath}`);
+  }
+
+  if (files.length === 0) {
+    return {
+      format: "patch-plan",
+      files: [],
+      claims: [],
+      decisionSummary:
+        "No technical SEO changes needed — existing implementations appear complete",
+    };
+  }
+
+  // Pass to LLM for FIX_TECHNICAL_SEO if we have new-create files and AI is available
+  if (
+    brief.actionType === "FIX_TECHNICAL_SEO" &&
+    (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) &&
+    files.some((f) => f.operation === "create")
+  ) {
+    try {
+      const result = await generateStructured({
+        tier: "strong",
+        system: `You are the Writer agent specializing in technical SEO for Next.js App Router projects.
+
+RULES — read carefully before writing:
+- App root: "${appRoot}" — ALL files MUST be under this exact prefix
+- For sitemap.ts: enumerate all content routes from the provided list. Use dynamic import or static array.
+- For robots.ts: allow all crawlers, point sitemap to \${base}/sitemap.xml
+- If a file uses operation "create", provide complete working TypeScript content
+- Never add imaginary routes — only use the provided content routes
+- Never touch files not in the provided list
+- Use: const base = ${baseUrlToken};
+- sitemap must export default function returning MetadataRoute.Sitemap
+- robots must export default function returning MetadataRoute.Robots`,
+        prompt: JSON.stringify({
+          brief: { ...brief, technicalSeoContext: undefined },
+          appRoot,
+          issues,
+          contentRoutes,
+          heuristicDraft: files,
+          product: profile?.product,
+        }),
+        schema: writerOutputSchema,
+      });
+      // Validate the LLM respected the app root
+      const allFilesCorrect = result.object.files.every(
+        (f) => f.path.startsWith(appRoot + "/") || f.path.startsWith("public/"),
+      );
+      if (allFilesCorrect && result.object.files.length > 0) {
+        return {
+          ...result.object,
+          decisionSummary: result.object.decisionSummary || summaryParts.join("; "),
+        };
+      }
+    } catch {
+      // keep heuristic draft
+    }
+  }
+
+  return {
+    format: "patch-plan",
+    files,
+    claims: [],
+    decisionSummary: summaryParts.join("; ") || `Technical SEO files prepared under ${appRoot}/`,
+  };
+}
+
+/**
+ * Dedicated writer for IMPROVE_INDEXABILITY.
+ * Reads existing layout and adds missing OG, Twitter card, canonical, metadataBase.
+ */
+async function writeIndexabilityPatches(
+  projectId: string,
+  brief: z.infer<typeof contentBriefSchema>,
+  profile: ProjectIntelligenceProfile | undefined,
+): Promise<z.infer<typeof writerOutputSchema>> {
+  const ctx = brief.technicalSeoContext;
+  const layoutInfo = profile?.seo?.metadata as Record<string, unknown> | undefined;
+  const layoutPath =
+    ctx?.existingLayoutPath ??
+    (layoutInfo?.["path"] as string | undefined) ??
+    (profile?.technology?.framework === "next-app-router" ? "src/app/layout.tsx" : null);
+
+  if (!layoutPath) {
+    return {
+      format: "patch-plan",
+      files: [],
+      claims: [],
+      decisionSummary: "Could not locate root layout file — skipped IMPROVE_INDEXABILITY",
+    };
+  }
+
+  const existingContent =
+    ctx?.existingLayoutContent ?? (await fetchExistingFile(projectId, layoutPath));
+  if (!existingContent) {
+    return {
+      format: "patch-plan",
+      files: [],
+      claims: [],
+      decisionSummary: `Layout file ${layoutPath} not found in repository`,
+    };
+  }
+
+  const productName = profile?.product.name ?? "the product";
+  const issues = ctx?.specificIssues ?? [];
+
+  if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
+    try {
+      const result = await generateStructured({
+        tier: "strong",
+        system: `You are the Writer agent specializing in Next.js metadata and Open Graph optimization.
+
+TASK: Improve SEO metadata in the root layout file.
+
+RULES:
+- operation MUST be "update"
+- Include the COMPLETE updated file content — never a partial or diff
+- Only ADD missing metadata fields — never remove or reorder existing code
+- Add to the metadata export: openGraph (with title, description, images), twitter (with card: "summary_large_image"), metadataBase (if missing)
+- If metadata export doesn't exist, add export const metadata: Metadata = { ... }
+- If openGraph already exists, only add the missing sub-fields
+- Never break existing imports, JSX, or component logic
+- Use the product name "${productName}" for default titles
+- For og:image, use "/og-image.png" as a safe default path placeholder
+- Do not fabricate statistics or testimonials`,
+        prompt: JSON.stringify({
+          layoutPath,
+          existingContent,
+          issues,
+          productName,
+          product: profile?.product,
+        }),
+        schema: writerOutputSchema,
+      });
+      if (result.object.files.length > 0) return result.object;
+    } catch {
+      // heuristic fallback below
+    }
+  }
+
+  // Heuristic: inject minimal OG block into existing metadata export
+  const hasMetadataExport = /export\s+(const|let|var)\s+metadata\s*[=:]/.test(existingContent);
+  if (hasMetadataExport && !layoutInfo?.["hasOpenGraph"]) {
+    const ogBlock = `  openGraph: {
+    type: "website",
+    title: "${productName}",
+    description: "Discover ${productName} — ${profile?.product.summary?.slice(0, 100) ?? "learn more"}",
+    images: [{ url: "/og-image.png", width: 1200, height: 630 }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "${productName}",
+  },`;
+    const patched = existingContent.replace(
+      /(export\s+(?:const|let|var)\s+metadata\s*(?::\s*\w+\s*)?=\s*\{)([\s\S]*?)(\};)/,
+      (_, open, inner, close) => `${open}${inner.trimEnd()}\n${ogBlock}\n${close}`,
+    );
+    if (patched !== existingContent) {
+      return {
+        format: "patch-plan",
+        files: [{ path: layoutPath, operation: "update", content: patched }],
+        claims: [],
+        decisionSummary: `Added Open Graph and Twitter Card metadata to ${layoutPath}`,
+      };
+    }
+  }
+
+  return {
+    format: "patch-plan",
+    files: [],
+    claims: [],
+    decisionSummary: "Layout metadata already appears complete — no indexability changes needed",
+  };
+}
+
+/**
+ * Dedicated writer for ADD_STRUCTURED_DATA.
+ * Adds JSON-LD Organization + WebSite schema to root layout.
+ */
+async function writeStructuredDataPatches(
+  projectId: string,
+  brief: z.infer<typeof contentBriefSchema>,
+  profile: ProjectIntelligenceProfile | undefined,
+): Promise<z.infer<typeof writerOutputSchema>> {
+  const ctx = brief.technicalSeoContext;
+  const layoutInfo = profile?.seo?.metadata as Record<string, unknown> | undefined;
+  const layoutPath =
+    ctx?.existingLayoutPath ??
+    (layoutInfo?.["path"] as string | undefined) ??
+    null;
+
+  if (!layoutPath) {
+    return {
+      format: "patch-plan",
+      files: [],
+      claims: [],
+      decisionSummary: "Could not locate root layout file — skipped ADD_STRUCTURED_DATA",
+    };
+  }
+
+  const existingContent =
+    ctx?.existingLayoutContent ?? (await fetchExistingFile(projectId, layoutPath));
+  if (!existingContent) {
+    return {
+      format: "patch-plan",
+      files: [],
+      claims: [],
+      decisionSummary: `Layout file ${layoutPath} not found — skipped ADD_STRUCTURED_DATA`,
+    };
+  }
+
+  // Skip if JSON-LD already exists
+  if (/application\/ld\+json|json-ld|jsonLd|"@type"\s*:/i.test(existingContent)) {
+    return {
+      format: "patch-plan",
+      files: [],
+      claims: [],
+      decisionSummary: "JSON-LD structured data already present in layout — no change needed",
+    };
+  }
+
+  const productName = profile?.product.name ?? "the product";
+  const siteUrl = ctx?.baseUrl ?? 'process.env.NEXT_PUBLIC_APP_URL ?? "https://example.com"';
+
+  if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
+    try {
+      const result = await generateStructured({
+        tier: "strong",
+        system: `You are the Writer agent specializing in JSON-LD structured data for Next.js.
+
+TASK: Add Organization and WebSite JSON-LD to the root layout.
+
+RULES:
+- operation MUST be "update"
+- Include the COMPLETE updated file content
+- Add a <script type="application/ld+json"> tag inside the <body> or <head> via a jsonLd const
+- Use Organization schema with name, url, logo
+- Use WebSite schema with name, url, potentialAction (SearchAction if applicable)
+- Never break existing JSX, imports, or component logic
+- Product name: "${productName}"
+- Do not fabricate organization details beyond name and URL`,
+        prompt: JSON.stringify({
+          layoutPath,
+          existingContent,
+          productName,
+          siteUrl,
+          product: profile?.product,
+        }),
+        schema: writerOutputSchema,
+      });
+      if (result.object.files.length > 0) return result.object;
+    } catch {
+      // heuristic fallback
+    }
+  }
+
+  // Heuristic: append a JSON-LD script before the closing </body>
+  const jsonLdScript = `
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            "@context": "https://schema.org",
+            "@graph": [
+              {
+                "@type": "Organization",
+                name: "${productName}",
+                url: process.env.NEXT_PUBLIC_APP_URL ?? "/",
+              },
+              {
+                "@type": "WebSite",
+                name: "${productName}",
+                url: process.env.NEXT_PUBLIC_APP_URL ?? "/",
+              },
+            ],
+          }),
+        }}
+      />`;
+
+  const patched = existingContent.replace(
+    /(<\/body>)/,
+    `${jsonLdScript}\n      $1`,
+  );
+  if (patched !== existingContent) {
+    return {
+      format: "patch-plan",
+      files: [{ path: layoutPath, operation: "update", content: patched }],
+      claims: [],
+      decisionSummary: `Added Organization + WebSite JSON-LD structured data to ${layoutPath}`,
+    };
+  }
+
+  return {
+    format: "patch-plan",
+    files: [],
+    claims: [],
+    decisionSummary: "Could not inject JSON-LD — layout structure not recognized",
+  };
+}
+
 async function runWriterStage(
   projectId: string,
   seoActionId: string,
@@ -964,6 +1494,52 @@ async function runWriterStage(
     return draft;
   }
 
+  // Technical SEO actions — use dedicated, context-aware writers
+  if (
+    brief.actionType === "FIX_TECHNICAL_SEO" ||
+    brief.actionType === "UPDATE_SITEMAP"
+  ) {
+    const draft = await writeTechnicalSeoPatches(projectId, brief, profile);
+    await db.insert(schema.agentRuns).values({
+      seoActionId,
+      projectId,
+      stage: "writer",
+      status: "succeeded",
+      input: { brief, mode: "technical_seo_patch" },
+      output: draft,
+      decisionSummary: draft.decisionSummary,
+    });
+    return draft;
+  }
+
+  if (brief.actionType === "IMPROVE_INDEXABILITY") {
+    const draft = await writeIndexabilityPatches(projectId, brief, profile);
+    await db.insert(schema.agentRuns).values({
+      seoActionId,
+      projectId,
+      stage: "writer",
+      status: "succeeded",
+      input: { brief, mode: "indexability_patch" },
+      output: draft,
+      decisionSummary: draft.decisionSummary,
+    });
+    return draft;
+  }
+
+  if (brief.actionType === "ADD_STRUCTURED_DATA") {
+    const draft = await writeStructuredDataPatches(projectId, brief, profile);
+    await db.insert(schema.agentRuns).values({
+      seoActionId,
+      projectId,
+      stage: "writer",
+      status: "succeeded",
+      input: { brief, mode: "structured_data_patch" },
+      output: draft,
+      decisionSummary: draft.decisionSummary,
+    });
+    return draft;
+  }
+
   let draft: z.infer<typeof writerOutputSchema> = {
     format: "mdx",
     files: [
@@ -995,14 +1571,15 @@ This update was prepared by Seoneer as a reviewable repository change. Claims ar
   };
 
   if (brief.actionType === "BUILD_BLOG_FOUNDATION") {
+    const foundationDir = profile?.website.blogDirectory ?? "content/blog";
     draft.files = [
       {
-        path: "content/blog/.gitkeep",
+        path: `${foundationDir}/.gitkeep`,
         operation: "create",
         content: "",
       },
       {
-        path: "content/blog/hello-seoneer.mdx",
+        path: `${foundationDir}/hello-seoneer.mdx`,
         operation: "create",
         content: `---
 title: Hello from your SEO engineer
@@ -1013,34 +1590,6 @@ date: "${todayPublishDate()}"
 # Hello from your SEO engineer
 
 This post establishes a safe Markdown/MDX content location for future SEO work.
-`,
-      },
-    ];
-  }
-
-  if (brief.actionType === "UPDATE_SITEMAP" || brief.actionType === "FIX_TECHNICAL_SEO") {
-    draft.format = "patch-plan";
-    draft.files = [
-      {
-        path: "src/app/sitemap.ts",
-        operation: "create",
-        content: `import type { MetadataRoute } from "next";
-
-export default function sitemap(): MetadataRoute.Sitemap {
-  const base = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
-  return [{ url: base, lastModified: new Date() }];
-}
-`,
-      },
-      {
-        path: "src/app/robots.ts",
-        operation: "create",
-        content: `import type { MetadataRoute } from "next";
-
-export default function robots(): MetadataRoute.Robots {
-  const base = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
-  return { rules: { userAgent: "*", allow: "/" }, sitemap: \`\${base}/sitemap.xml\` };
-}
 `,
       },
     ];
@@ -1110,6 +1659,21 @@ async function runReviewStage(
     files: draft.files,
     productName: profile?.product.name,
   });
+
+  // Technical SEO-specific gates
+  const action = await db.query.seoActions.findFirst({
+    where: eq(schema.seoActions.id, seoActionId),
+  });
+  const actionType = action?.actionType;
+  if (
+    actionType === "FIX_TECHNICAL_SEO" ||
+    actionType === "UPDATE_SITEMAP" ||
+    actionType === "IMPROVE_INDEXABILITY" ||
+    actionType === "ADD_STRUCTURED_DATA"
+  ) {
+    const techGates = runTechnicalSeoGates({ files: draft.files, profile });
+    gates.push(...techGates);
+  }
 
   const repo = await getProjectRepository(projectId);
   const installation = await getInstallationForProject(projectId);

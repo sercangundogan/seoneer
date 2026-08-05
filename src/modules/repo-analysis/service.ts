@@ -7,6 +7,13 @@ import {
 import { getInstallationForProject, getProjectRepository } from "@/modules/projects/service";
 import {
   buildHeuristicIntelligence,
+  detectAppRoot,
+  detectSitemapArtifact,
+  detectRobotsArtifact,
+  detectLayoutFeatures,
+  detectNextSitemapPackage,
+  detectBlogDirs,
+  detectPackageManager,
   type RepoAnalysisSummary,
 } from "@/modules/repo-analysis/heuristic";
 
@@ -17,38 +24,36 @@ const PRIORITY_FILES = [
   "package.json",
   "README.md",
   "readme.md",
+  // Layouts — needed for metadata / OG / JSON-LD detection
   "app/layout.tsx",
   "src/app/layout.tsx",
+  "app/layout.ts",
+  "src/app/layout.ts",
+  // Home pages
   "app/page.tsx",
   "src/app/page.tsx",
+  // Next.js Metadata Routes
   "app/sitemap.ts",
   "src/app/sitemap.ts",
+  "app/sitemap.js",
+  "src/app/sitemap.js",
   "app/robots.ts",
   "src/app/robots.ts",
+  "app/robots.js",
+  "src/app/robots.js",
+  // Static SEO files
+  "public/robots.txt",
+  "public/sitemap.xml",
+  "public/sitemap_index.xml",
+  // Third-party sitemap configs
+  "next-sitemap.config.js",
+  "next-sitemap.config.ts",
+  "next-sitemap.config.mjs",
+  // Next.js config
   "next.config.ts",
   "next.config.js",
   "next.config.mjs",
 ];
-
-function detectPackageManager(paths: string[]): string {
-  if (paths.includes("pnpm-lock.yaml")) return "pnpm";
-  if (paths.includes("yarn.lock")) return "yarn";
-  if (paths.includes("bun.lockb") || paths.includes("bun.lock")) return "bun";
-  if (paths.includes("package-lock.json")) return "npm";
-  return "unknown";
-}
-
-function detectBlogDirs(paths: string[]): string[] {
-  const dirs = new Set<string>();
-  for (const p of paths) {
-    if (/(^|\/)(content\/blog|app\/blog|src\/app\/blog|posts|content\/posts)\//.test(p)) {
-      const parts = p.split("/");
-      const idx = parts.findIndex((x) => ["blog", "posts"].includes(x));
-      if (idx >= 0) dirs.add(parts.slice(0, idx + 1).join("/"));
-    }
-  }
-  return [...dirs];
-}
 
 export async function analyseRepository(projectId: string): Promise<RepoAnalysisSummary> {
   const repo = await getProjectRepository(projectId);
@@ -90,6 +95,9 @@ export async function analyseRepository(projectId: string): Promise<RepoAnalysis
 
   const directoryMap = [...new Set(paths.map((p) => p.split("/").slice(0, 2).join("/")))].sort();
   const blogDirectories = detectBlogDirs(paths);
+  const sitemap = detectSitemapArtifact(paths, files);
+  const robots = detectRobotsArtifact(paths);
+  const layout = detectLayoutFeatures(files);
 
   const summary: RepoAnalysisSummary = {
     commitSha: sha,
@@ -97,12 +105,17 @@ export async function analyseRepository(projectId: string): Promise<RepoAnalysis
     directoryMap,
     files,
     detected: {
-      framework: paths.some((p) => p.includes("app/")) ? "next-app-router" : "unknown",
+      framework: detectAppRoot(paths) ? "next-app-router" : "unknown",
       packageManager: detectPackageManager(paths),
       blogDirectories,
       contentFiles,
-      hasSitemap: paths.some((p) => /sitemap\.(ts|js|xml)$/.test(p)),
-      hasRobots: paths.some((p) => /robots\.(ts|js|txt)$/.test(p)),
+      hasSitemap: sitemap.kind !== "none",
+      hasRobots: robots.kind !== "none",
+      appRoot: detectAppRoot(paths),
+      sitemap,
+      robots,
+      layout,
+      hasNextSitemapPackage: detectNextSitemapPackage(files),
     },
   };
 
