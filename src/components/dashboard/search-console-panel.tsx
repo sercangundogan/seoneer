@@ -227,16 +227,16 @@ export function SearchConsolePanel({
               ? "Connected. Seoneer will use query and page performance to pick actions and measure impact."
               : "Seoneer is using your Search Console data for keywords, prioritization, and post-merge impact."}
           </p>
-          <p className="mt-1 text-xs text-[var(--fg-muted)]">{gsc?.siteUrl}</p>
-          <div className="mt-3">
-            <Button
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <p className="text-sm text-[var(--fg)]">{gsc?.siteUrl}</p>
+            <button
               type="button"
-              variant="ghost"
               onClick={() => void connect()}
               disabled={disabled || busy}
+              className="text-xs text-[var(--fg-muted)] underline-offset-2 transition hover:text-[var(--fg)] hover:underline disabled:opacity-50"
             >
-              Reconnect
-            </Button>
+              {busy ? "Reconnecting…" : "Reconnect"}
+            </button>
           </div>
         </>
       ) : (

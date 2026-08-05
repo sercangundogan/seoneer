@@ -75,6 +75,13 @@ export function agentStatusTone(status: string | null | undefined): AgentStatusT
   }
 }
 
+/** True when the blocked detail is about billing / free sample / credits. */
+export function isBillingBlockDetail(detail: string | null | undefined): boolean {
+  return /upgrade|credit|billing|sample|subscription|past_due|inactive|plan/i.test(
+    detail ?? "",
+  );
+}
+
 /**
  * Resolve a clear next action from status + detail text.
  * When awaiting approval, prefer the GitHub PR / compare URL if available.
@@ -85,6 +92,8 @@ export function resolveAgentStatusCta(input: {
   projectId?: string;
   /** GitHub PR html_url or compare/?quick_pull=1 URL */
   reviewUrl?: string | null;
+  /** When set and paid, billing blocks should not push Upgrade CTA. */
+  plan?: string | null;
 }): AgentStatusCta | null {
   const status = input.status ?? "idle";
   const detail = (input.detail ?? "").toLowerCase();
@@ -94,11 +103,14 @@ export function resolveAgentStatusCta(input: {
     reviewUrl != null &&
     (reviewUrl.startsWith("https://github.com/") || reviewUrl.startsWith("http://github.com/")) &&
     !reviewUrl.startsWith("dry-run://");
+  const paidPlan =
+    input.plan != null && input.plan !== "" && input.plan !== "free";
 
   if (status === "blocked") {
-    if (
-      /upgrade|credit|billing|sample|subscription|past_due|inactive|plan/.test(detail)
-    ) {
+    if (isBillingBlockDetail(detail)) {
+      if (paidPlan) {
+        return { label: "Run SEO action", href: projectHref };
+      }
       return { label: "Upgrade for SEO Action credits", href: "/billing" };
     }
     return { label: "Review setup", href: projectHref };

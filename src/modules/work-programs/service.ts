@@ -203,7 +203,7 @@ const BUSY_STATUSES = [
   "creating_pr",
   "merging",
   "awaiting_approval",
-  "blocked",
+  // "blocked" is intentionally omitted — billing blocks should retry after upgrade
 ];
 
 /**

@@ -10,7 +10,7 @@ import {
 import { enqueueJob } from "@/modules/jobs/enqueue";
 import { confirmIntelligenceProfile, getLatestIntelligence } from "@/modules/intelligence/service";
 import { listAuditLogs } from "@/modules/audit-logs/service";
-import { getBillingState } from "@/modules/billing/service";
+import { getBillingState, healBillingBlockedProject } from "@/modules/billing/service";
 import { resolveGithubReviewUrl } from "@/modules/github/client";
 import {
   listWorkPrograms,
@@ -33,6 +33,8 @@ export async function GET(_req: Request, { params }: Params) {
     if (!project) return json({ error: "Not found" }, 404);
 
     await syncOpenPullRequestForProject(projectId);
+
+    await healBillingBlockedProject(projectId, project.workspaceId);
 
     const [
       refreshedProject,

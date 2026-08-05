@@ -30,7 +30,7 @@ type Billing = {
   entitlement?: { samplePrUsed: boolean };
 };
 
-function buildAttention(primary: Project | undefined) {
+function buildAttention(primary: Project | undefined, plan?: string | null) {
   const attention: { text: string; href?: string; cta?: string }[] = [];
   if (!primary) return attention;
 
@@ -58,6 +58,7 @@ function buildAttention(primary: Project | undefined) {
       status: "blocked",
       detail: primary.agentStatusDetail,
       projectId: primary.id,
+      plan,
     });
     attention.push({
       text: primary.agentStatusDetail ?? "Action cycle is blocked — check billing or setup.",
@@ -138,7 +139,7 @@ export default function DashboardPageClient() {
     samplePrUsed: billing?.entitlement?.samplePrUsed,
     agentStatus: primary?.agentStatus,
   });
-  const attention = buildAttention(primary);
+  const attention = buildAttention(primary, billing?.subscription?.plan);
   const merged = searchParams.get("merged");
 
   return (
@@ -162,6 +163,7 @@ export default function DashboardPageClient() {
             detail={primary?.agentStatusDetail}
             projectId={primary?.id}
             reviewUrl={primary?.latestReviewUrl}
+            plan={billing?.subscription?.plan}
           />
 
           {showUpsell ? <AutomationUpsell className="mt-6" /> : null}

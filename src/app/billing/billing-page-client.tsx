@@ -131,6 +131,27 @@ export default function BillingPageClient() {
     if (searchParams.get("checkout") !== "success") return;
     setShowPaymentSuccess(true);
     router.replace("/billing", { scroll: false });
+
+    // Webhooks can lag a few seconds — poll until plan/credits appear.
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      void fetch("/api/billing", { credentials: "same-origin" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((body: Billing | null) => {
+          if (!body) return;
+          setData(body);
+          const paid =
+            body.subscription?.plan &&
+            body.subscription.plan !== "free" &&
+            body.subscription.status === "active";
+          if (paid || attempts >= 12) {
+            window.clearInterval(timer);
+          }
+        });
+    }, 2500);
+
+    return () => window.clearInterval(timer);
   }, [searchParams, router]);
 
   const dismissPaymentSuccess = useCallback(() => {

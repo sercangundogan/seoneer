@@ -1,5 +1,6 @@
 import { and, eq, gt } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
+import { isBillingBlockDetail } from "@/lib/agent-status";
 import { writeAuditLog } from "@/modules/audit-logs/service";
 import { planForProductId, type PaidPlan } from "@/modules/billing/dodo";
 
@@ -213,6 +214,10 @@ export async function processDodoWebhook(input: {
       });
     }
 
+    if (!skipCreditGrant && status === "active" && plan !== "free") {
+      await clearBillingBlockedProjects(workspaceId);
+    }
+
     await writeAuditLog({
       workspaceId,
       action: "billing.subscription_updated",
@@ -234,6 +239,58 @@ export async function processDodoWebhook(input: {
     .where(eq(schema.webhookEvents.externalId, input.externalId));
 
   return { duplicate: false };
+}
+
+/**
+ * Projects stay `blocked` after the free sample is used. After a paid plan
+ * activates, clear those billing blocks so the UI and schedulers can continue.
+ */
+export async function clearBillingBlockedProjects(workspaceId: string) {
+  const projects = await db.query.projects.findMany({
+    where: and(
+      eq(schema.projects.workspaceId, workspaceId),
+      eq(schema.projects.agentStatus, "blocked"),
+    ),
+  });
+
+  for (const project of projects) {
+    if (!isBillingBlockDetail(project.agentStatusDetail)) continue;
+    await db
+      .update(schema.projects)
+      .set({
+        agentStatus: "idle",
+        agentStatusDetail: "Plan active — ready for the next SEO action",
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.projects.id, project.id));
+  }
+}
+
+/**
+ * If the agent is stuck on a billing block but billing now allows a cycle,
+ * clear the stale status (self-heal after upgrade when webhook already ran).
+ */
+export async function healBillingBlockedProject(projectId: string, workspaceId: string) {
+  const project = await db.query.projects.findFirst({
+    where: eq(schema.projects.id, projectId),
+  });
+  if (!project || project.agentStatus !== "blocked") return null;
+  if (!isBillingBlockDetail(project.agentStatusDetail)) return null;
+
+  const billing = await canStartActionCycle(workspaceId);
+  if (!billing.ok) return null;
+
+  const [updated] = await db
+    .update(schema.projects)
+    .set({
+      agentStatus: "idle",
+      agentStatusDetail: "Plan active — ready for the next SEO action",
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.projects.id, projectId))
+    .returning();
+
+  return updated ?? null;
 }
 
 export const PLAN_CREDITS: Record<string, number> = {

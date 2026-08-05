@@ -8,6 +8,7 @@ import {
   listProjectsWithReposForUser,
 } from "@/modules/projects/service";
 import { syncAwaitingPullRequestsForProjects } from "@/modules/pull-requests/sync";
+import { clearBillingBlockedProjects, getBillingState } from "@/modules/billing/service";
 
 export async function GET() {
   try {
@@ -15,6 +16,21 @@ export async function GET() {
     const workspace = await getWorkspaceForUser(session.user.id);
     const projects = await listProjectsWithReposForUser(session.user.id);
     await syncAwaitingPullRequestsForProjects(projects.map((p) => p.id));
+
+    // Paid workspaces: clear stale free-sample blocks so Overview matches reality.
+    if (workspace) {
+      const billing = await getBillingState(workspace.id);
+      const plan = billing.subscription?.plan;
+      if (
+        plan &&
+        plan !== "free" &&
+        billing.subscription?.status === "active" &&
+        (billing.credits?.balance ?? 0) > 0
+      ) {
+        await clearBillingBlockedProjects(workspace.id);
+      }
+    }
+
     const refreshedProjects = await listProjectsWithReposForUser(session.user.id);
     const connectedRepos = workspace
       ? await listConnectedRepoFullNames(workspace.id)

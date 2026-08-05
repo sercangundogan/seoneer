@@ -15,7 +15,7 @@ import {
 } from "@/components/dashboard/search-console-panel";
 import { WorkProgramsEditor } from "@/components/work-programs/work-programs-editor";
 import { Badge, Button } from "@/components/ui/primitives";
-import { isAgentWorking, isAwaitingPullRequestReview } from "@/lib/agent-status";
+import { isAgentWorking, isAwaitingPullRequestReview, isBillingBlockDetail } from "@/lib/agent-status";
 import {
   defaultWorkProgramInputs,
   type PeriodDays,
@@ -316,12 +316,14 @@ function ProjectPageInner() {
     gsc,
   } = data;
   const blocked = project.agentStatus === "blocked";
+  const billingBlocked = blocked && isBillingBlockDetail(project.agentStatusDetail);
   const cycleRunning = busy || forcePoll || isAgentWorking(project.agentStatus);
   const awaitingApproval = isAwaitingPullRequestReview({
     agentStatus: project.agentStatus,
     mergeStatus: latestPullRequest?.mergeStatus,
   });
-  const runDisabled = blocked || cycleRunning || awaitingApproval;
+  // Billing blocks must remain retriable after upgrade — do not permanently disable Run.
+  const runDisabled = (blocked && !billingBlocked) || cycleRunning || awaitingApproval;
   const reviewUrl = latestPullRequest?.prUrl ?? null;
   const showUpsell = shouldShowAutomationUpsell({
     plan: billing?.subscription?.plan,
@@ -337,13 +339,14 @@ function ProjectPageInner() {
         fallbackDetail={intelligence?.profile.decisionSummary}
         projectId={project.id}
         reviewUrl={reviewUrl}
+        plan={billing?.subscription?.plan}
         actions={
           <Button
             onClick={() => void runCycle()}
             loading={cycleRunning}
             disabled={runDisabled}
             title={
-              blocked
+              blocked && !billingBlocked
                 ? (project.agentStatusDetail ?? "Agent is blocked")
                 : awaitingApproval
                   ? "Approve the pending update before starting another action"

@@ -15,6 +15,7 @@ export function AgentStatusPanel({
   fallbackDetail,
   projectId,
   reviewUrl,
+  plan,
   actions,
 }: {
   status: string | null | undefined;
@@ -23,13 +24,15 @@ export function AgentStatusPanel({
   projectId?: string;
   /** GitHub PR or compare URL for awaiting_approval CTA */
   reviewUrl?: string | null;
+  /** Current workspace plan — used to avoid Upgrade CTA after payment */
+  plan?: string | null;
   /** Optional extra actions (e.g. Run SEO action) rendered on the right */
   actions?: ReactNode;
 }) {
   const working = isAgentWorking(status);
   const tone = agentStatusTone(status);
   const label = formatAgentStatus(status);
-  const cta = resolveAgentStatusCta({ status, detail, projectId, reviewUrl });
+  const cta = resolveAgentStatusCta({ status, detail, projectId, reviewUrl, plan });
   const description =
     detail?.trim() ||
     fallbackDetail ||
