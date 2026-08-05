@@ -123,34 +123,22 @@ export function detectRobotsArtifact(paths: string[]): RepoAnalysisSummary["dete
   return { kind: "none", path: null };
 }
 
+export const ROOT_LAYOUT_CANDIDATES = [
+  "src/app/layout.tsx",
+  "src/app/layout.ts",
+  "src/app/layout.jsx",
+  "src/app/layout.js",
+  "app/layout.tsx",
+  "app/layout.ts",
+  "app/layout.jsx",
+  "app/layout.js",
+] as const;
+
 export function detectLayoutFeatures(
   files: Record<string, string>,
+  paths: string[] = [],
 ): RepoAnalysisSummary["detected"]["layout"] {
-  const layoutPaths = [
-    "src/app/layout.tsx",
-    "src/app/layout.ts",
-    "app/layout.tsx",
-    "app/layout.ts",
-    "src/app/layout.jsx",
-    "app/layout.jsx",
-  ];
-  for (const p of layoutPaths) {
-    const content = files[p];
-    if (!content) continue;
-    return {
-      path: p,
-      hasMetadataExport: /export\s+(const|let|var)\s+metadata\s*[=:]/.test(content),
-      hasGenerateMetadata: /export\s+(async\s+)?function\s+generateMetadata/.test(content),
-      hasOpenGraph: /openGraph\s*[=:{]|og:image|og:title|og:description/.test(content),
-      hasTwitterCard: /twitter\s*[:{]|twitter:card|twitter:title/.test(content),
-      hasCanonical: /canonical/.test(content),
-      hasJsonLd:
-        /application\/ld\+json|jsonLd|JsonLd|json-ld|"@type"\s*:/i.test(content) ||
-        /structured.*data|schema\.org/i.test(content),
-    };
-  }
-  return {
-    path: null,
+  const emptyFeatures = {
     hasMetadataExport: false,
     hasGenerateMetadata: false,
     hasOpenGraph: false,
@@ -158,6 +146,34 @@ export function detectLayoutFeatures(
     hasCanonical: false,
     hasJsonLd: false,
   };
+
+  const analyze = (path: string, content: string) => ({
+    path,
+    hasMetadataExport: /export\s+(const|let|var)\s+metadata\s*[=:]/.test(content),
+    hasGenerateMetadata: /export\s+(async\s+)?function\s+generateMetadata/.test(content),
+    hasOpenGraph: /openGraph\s*[=:{]|og:image|og:title|og:description/.test(content),
+    hasTwitterCard: /twitter\s*[:{]|twitter:card|twitter:title/.test(content),
+    hasCanonical: /canonical/.test(content),
+    hasJsonLd:
+      /application\/ld\+json|jsonLd|JsonLd|json-ld|"@type"\s*:/i.test(content) ||
+      /structured.*data|schema\.org/i.test(content),
+  });
+
+  // Prefer candidates we already read
+  for (const p of ROOT_LAYOUT_CANDIDATES) {
+    const content = files[p];
+    if (content) return analyze(p, content);
+  }
+
+  // Path present in tree but not yet read — still record location
+  for (const p of ROOT_LAYOUT_CANDIDATES) {
+    if (paths.includes(p)) return { path: p, ...emptyFeatures };
+  }
+
+  const found = paths.find((p) => /^(src\/)?app\/layout\.(tsx|ts|jsx|js)$/.test(p));
+  if (found) return { path: found, ...emptyFeatures };
+
+  return { path: null, ...emptyFeatures };
 }
 
 export function detectNextSitemapPackage(files: Record<string, string>): boolean {

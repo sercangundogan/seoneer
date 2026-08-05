@@ -654,25 +654,22 @@ async function runBriefStage(
 
     const existingSitemapPath = (seoMeta?.["path"] as string | null) ?? null;
     const existingRobotsPath = (robotsMeta?.["path"] as string | null) ?? null;
-    const existingLayoutPath = (layoutMeta?.["path"] as string | null) ?? null;
 
-    // Detect app root from profile data
-    const appRootRaw =
-      existingSitemapPath?.startsWith("src/app/") ||
-      existingRobotsPath?.startsWith("src/app/") ||
-      existingLayoutPath?.startsWith("src/app/")
+    const resolvedLayout = await resolveRootLayout(projectId, profile, {
+      path: (layoutMeta?.["path"] as string | null) ?? null,
+    });
+
+    const appRoot =
+      resolvedLayout?.appRoot ??
+      (existingSitemapPath?.startsWith("src/app/") || existingRobotsPath?.startsWith("src/app/")
         ? "src/app"
-        : existingSitemapPath?.startsWith("app/") ||
-            existingRobotsPath?.startsWith("app/") ||
-            existingLayoutPath?.startsWith("app/")
+        : existingSitemapPath?.startsWith("app/") || existingRobotsPath?.startsWith("app/")
           ? "app"
-          : null;
-    const appRoot = (appRootRaw ?? "src/app") as "app" | "src/app";
+          : "src/app");
 
-    const [existingSitemapContent, existingRobotsContent, existingLayoutContent] = await Promise.all([
+    const [existingSitemapContent, existingRobotsContent] = await Promise.all([
       existingSitemapPath ? fetchExistingFile(projectId, existingSitemapPath) : Promise.resolve(null),
       existingRobotsPath ? fetchExistingFile(projectId, existingRobotsPath) : Promise.resolve(null),
-      existingLayoutPath ? fetchExistingFile(projectId, existingLayoutPath) : Promise.resolve(null),
     ]);
 
     const contentRoutes = await listBlogContentPaths(projectId);
@@ -686,8 +683,10 @@ async function runBriefStage(
         existingSitemapContent: existingSitemapContent ? existingSitemapContent.slice(0, 4000) : null,
         existingRobotsPath,
         existingRobotsContent: existingRobotsContent ? existingRobotsContent.slice(0, 2000) : null,
-        existingLayoutPath,
-        existingLayoutContent: existingLayoutContent ? existingLayoutContent.slice(0, 8000) : null,
+        existingLayoutPath: resolvedLayout?.path ?? null,
+        existingLayoutContent: resolvedLayout?.content
+          ? resolvedLayout.content.slice(0, 8000)
+          : null,
         contentRoutes,
         baseUrl: null,
       },
@@ -995,6 +994,92 @@ async function fetchExistingFile(
   });
 }
 
+const ROOT_LAYOUT_CANDIDATES = [
+  "src/app/layout.tsx",
+  "src/app/layout.ts",
+  "src/app/layout.jsx",
+  "src/app/layout.js",
+  "app/layout.tsx",
+  "app/layout.ts",
+  "app/layout.jsx",
+  "app/layout.js",
+] as const;
+
+/**
+ * Resolve the project's root layout path + content.
+ * Does not rely solely on the intelligence profile (often stale / missing path).
+ */
+async function resolveRootLayout(
+  projectId: string,
+  profile: ProjectIntelligenceProfile | undefined,
+  hints?: { path?: string | null; content?: string | null; appRoot?: "app" | "src/app" | null },
+): Promise<{ path: string; content: string; appRoot: "app" | "src/app" } | null> {
+  if (hints?.path && hints.content) {
+    const appRoot = hints.path.startsWith("src/app/") ? "src/app" : "app";
+    return { path: hints.path, content: hints.content, appRoot };
+  }
+
+  const candidates: string[] = [];
+  const push = (p: string | null | undefined) => {
+    if (p && !candidates.includes(p)) candidates.push(p);
+  };
+
+  push(hints?.path);
+  push(profile?.seo?.metadata?.["path"] as string | undefined);
+
+  // Cached repo analysis is more reliable than old intelligence profiles
+  const cached = await db.query.cachedRepoSummaries.findFirst({
+    where: eq(schema.cachedRepoSummaries.projectId, projectId),
+  });
+  const detected = (cached?.summary as { detected?: Record<string, unknown> } | null)?.detected;
+  const cachedLayout = detected?.layout as { path?: string } | undefined;
+  const cachedAppRoot = detected?.appRoot as "app" | "src/app" | null | undefined;
+  push(cachedLayout?.path);
+
+  const preferredRoot = hints?.appRoot ?? cachedAppRoot ?? null;
+  if (preferredRoot === "app") {
+    for (const p of ROOT_LAYOUT_CANDIDATES.filter((c) => c.startsWith("app/"))) push(p);
+    for (const p of ROOT_LAYOUT_CANDIDATES.filter((c) => c.startsWith("src/app/"))) push(p);
+  } else {
+    for (const p of ROOT_LAYOUT_CANDIDATES) push(p);
+  }
+
+  // Also scan tree paths if still needed
+  if (!candidates.length || !hints?.path) {
+    const repo = await getProjectRepository(projectId);
+    const installation = await getInstallationForProject(projectId);
+    if (repo && installation) {
+      try {
+        const { paths } = await getRepoTreePaths({
+          installationId: installation.installationId,
+          owner: repo.owner,
+          repo: repo.name,
+          ref: repo.defaultBranch,
+        });
+        for (const p of ROOT_LAYOUT_CANDIDATES) {
+          if (paths.includes(p)) push(p);
+        }
+        const found = paths.find((p) => /^(src\/)?app\/layout\.(tsx|ts|jsx|js)$/.test(p));
+        push(found);
+      } catch {
+        // ignore tree errors; still try candidates
+      }
+    }
+  }
+
+  for (const path of candidates) {
+    const content = path === hints?.path && hints?.content
+      ? hints.content
+      : await fetchExistingFile(projectId, path);
+    if (content) {
+      const appRoot = path.startsWith("src/app/") ? "src/app" : "app";
+      return { path, content, appRoot };
+    }
+  }
+
+  return null;
+}
+
 /** Build a human-readable list of content URLs for the sitemap from known blog paths. */
 function buildSitemapUrlList(contentPaths: string[], base: string): string {
   if (contentPaths.length === 0) return "";
@@ -1229,31 +1314,24 @@ async function writeIndexabilityPatches(
 ): Promise<z.infer<typeof writerOutputSchema>> {
   const ctx = brief.technicalSeoContext;
   const layoutInfo = profile?.seo?.metadata as Record<string, unknown> | undefined;
-  const layoutPath =
-    ctx?.existingLayoutPath ??
-    (layoutInfo?.["path"] as string | undefined) ??
-    (profile?.technology?.framework === "next-app-router" ? "src/app/layout.tsx" : null);
 
-  if (!layoutPath) {
+  const resolved = await resolveRootLayout(projectId, profile, {
+    path: ctx?.existingLayoutPath,
+    content: ctx?.existingLayoutContent,
+    appRoot: ctx?.appRoot ?? null,
+  });
+
+  if (!resolved) {
     return {
       format: "patch-plan",
       files: [],
       claims: [],
-      decisionSummary: "Could not locate root layout file — skipped IMPROVE_INDEXABILITY",
+      decisionSummary:
+        "Could not locate root layout file (tried app/ and src/app/ layout.*) — skipped IMPROVE_INDEXABILITY",
     };
   }
 
-  const existingContent =
-    ctx?.existingLayoutContent ?? (await fetchExistingFile(projectId, layoutPath));
-  if (!existingContent) {
-    return {
-      format: "patch-plan",
-      files: [],
-      claims: [],
-      decisionSummary: `Layout file ${layoutPath} not found in repository`,
-    };
-  }
-
+  const { path: layoutPath, content: existingContent } = resolved;
   const productName = profile?.product.name ?? "the product";
   const issues = ctx?.specificIssues ?? [];
 
@@ -1267,6 +1345,7 @@ TASK: Improve SEO metadata in the root layout file.
 
 RULES:
 - operation MUST be "update"
+- path MUST be exactly "${layoutPath}"
 - Include the COMPLETE updated file content — never a partial or diff
 - Only ADD missing metadata fields — never remove or reorder existing code
 - Add to the metadata export: openGraph (with title, description, images), twitter (with card: "summary_large_image"), metadataBase (if missing)
@@ -1285,7 +1364,16 @@ RULES:
         }),
         schema: writerOutputSchema,
       });
-      if (result.object.files.length > 0) return result.object;
+      if (result.object.files.length > 0) {
+        return {
+          ...result.object,
+          files: result.object.files.map((f) => ({
+            ...f,
+            path: layoutPath,
+            operation: "update" as const,
+          })),
+        };
+      }
     } catch {
       // heuristic fallback below
     }
@@ -1318,6 +1406,36 @@ RULES:
     }
   }
 
+  // No metadata export yet — prepend a minimal one before the default export
+  if (!hasMetadataExport) {
+    const importLine = existingContent.includes('from "next"')
+      ? ""
+      : `import type { Metadata } from "next";\n`;
+    const metadataBlock = `${importLine}export const metadata: Metadata = {
+  title: "${productName}",
+  description: "${(profile?.product.summary ?? productName).replace(/"/g, '\\"').slice(0, 155)}",
+  openGraph: {
+    type: "website",
+    title: "${productName}",
+    description: "${(profile?.product.summary ?? productName).replace(/"/g, '\\"').slice(0, 155)}",
+    images: [{ url: "/og-image.png", width: 1200, height: 630 }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "${productName}",
+  },
+};
+
+`;
+    const patched = metadataBlock + existingContent;
+    return {
+      format: "patch-plan",
+      files: [{ path: layoutPath, operation: "update", content: patched }],
+      claims: [],
+      decisionSummary: `Added metadata export with Open Graph tags to ${layoutPath}`,
+    };
+  }
+
   return {
     format: "patch-plan",
     files: [],
@@ -1336,31 +1454,24 @@ async function writeStructuredDataPatches(
   profile: ProjectIntelligenceProfile | undefined,
 ): Promise<z.infer<typeof writerOutputSchema>> {
   const ctx = brief.technicalSeoContext;
-  const layoutInfo = profile?.seo?.metadata as Record<string, unknown> | undefined;
-  const layoutPath =
-    ctx?.existingLayoutPath ??
-    (layoutInfo?.["path"] as string | undefined) ??
-    null;
 
-  if (!layoutPath) {
+  const resolved = await resolveRootLayout(projectId, profile, {
+    path: ctx?.existingLayoutPath,
+    content: ctx?.existingLayoutContent,
+    appRoot: ctx?.appRoot ?? null,
+  });
+
+  if (!resolved) {
     return {
       format: "patch-plan",
       files: [],
       claims: [],
-      decisionSummary: "Could not locate root layout file — skipped ADD_STRUCTURED_DATA",
+      decisionSummary:
+        "Could not locate root layout file (tried app/ and src/app/ layout.*) — skipped ADD_STRUCTURED_DATA",
     };
   }
 
-  const existingContent =
-    ctx?.existingLayoutContent ?? (await fetchExistingFile(projectId, layoutPath));
-  if (!existingContent) {
-    return {
-      format: "patch-plan",
-      files: [],
-      claims: [],
-      decisionSummary: `Layout file ${layoutPath} not found — skipped ADD_STRUCTURED_DATA`,
-    };
-  }
+  const { path: layoutPath, content: existingContent } = resolved;
 
   // Skip if JSON-LD already exists
   if (/application\/ld\+json|json-ld|jsonLd|"@type"\s*:/i.test(existingContent)) {
@@ -1385,6 +1496,7 @@ TASK: Add Organization and WebSite JSON-LD to the root layout.
 
 RULES:
 - operation MUST be "update"
+- path MUST be exactly "${layoutPath}"
 - Include the COMPLETE updated file content
 - Add a <script type="application/ld+json"> tag inside the <body> or <head> via a jsonLd const
 - Use Organization schema with name, url, logo
@@ -1401,7 +1513,16 @@ RULES:
         }),
         schema: writerOutputSchema,
       });
-      if (result.object.files.length > 0) return result.object;
+      if (result.object.files.length > 0) {
+        return {
+          ...result.object,
+          files: result.object.files.map((f) => ({
+            ...f,
+            path: layoutPath,
+            operation: "update" as const,
+          })),
+        };
+      }
     } catch {
       // heuristic fallback
     }

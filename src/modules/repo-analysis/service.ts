@@ -29,6 +29,10 @@ const PRIORITY_FILES = [
   "src/app/layout.tsx",
   "app/layout.ts",
   "src/app/layout.ts",
+  "app/layout.jsx",
+  "src/app/layout.jsx",
+  "app/layout.js",
+  "src/app/layout.js",
   // Home pages
   "app/page.tsx",
   "src/app/page.tsx",
@@ -97,7 +101,7 @@ export async function analyseRepository(projectId: string): Promise<RepoAnalysis
   const blogDirectories = detectBlogDirs(paths);
   const sitemap = detectSitemapArtifact(paths, files);
   const robots = detectRobotsArtifact(paths);
-  const layout = detectLayoutFeatures(files);
+  const layout = detectLayoutFeatures(files, paths);
 
   const summary: RepoAnalysisSummary = {
     commitSha: sha,
