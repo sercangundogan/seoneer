@@ -3,6 +3,7 @@ import { getWorkspaceForUser } from "@/modules/workspaces/service";
 import { getBillingState, PLAN_CREDITS } from "@/modules/billing/service";
 import {
   createCustomerPortalSession,
+  dodoDiagnostics,
   dodoMode,
   isDodoConfigured,
   productIdForPlan,
@@ -44,6 +45,7 @@ export async function GET() {
       })),
       checkoutEnabled: isDodoConfigured(),
       dodoMode: isDodoConfigured() ? dodoMode() : null,
+      dodoDiagnostics: isDodoConfigured() ? dodoDiagnostics() : null,
       portalUrl,
     });
   } catch (error) {

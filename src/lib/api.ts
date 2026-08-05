@@ -1,5 +1,6 @@
 import { auth } from "@/modules/auth";
 import { headers } from "next/headers";
+import { DodoApiError } from "@/modules/billing/dodo";
 
 export class ApiError extends Error {
   constructor(
@@ -25,6 +26,17 @@ export function json(data: unknown, status = 200) {
 export function handleRouteError(error: unknown) {
   if (error instanceof ApiError) {
     return json({ error: error.message }, error.status);
+  }
+  if (error instanceof DodoApiError) {
+    console.error("Dodo API error", error.status, error.body);
+    return json(
+      {
+        error: error.message,
+        source: "dodo",
+        dodoStatus: error.status,
+      },
+      error.status >= 400 && error.status < 500 ? error.status : 502,
+    );
   }
   if (error instanceof Response) return error;
   console.error(error);

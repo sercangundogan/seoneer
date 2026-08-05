@@ -33,6 +33,7 @@ const envSchema = z.object({
   DODO_WEBHOOK_SECRET: z.string().optional(),
   TRIGGER_SECRET_KEY: z.string().optional(),
   CRON_SECRET: z.string().optional(),
+  DODO_ENVIRONMENT: z.enum(["test", "live", "test_mode", "live_mode"]).optional(),
   SENTRY_DSN: z.string().optional(),
   NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
   NEXT_PUBLIC_POSTHOG_HOST: z.string().optional(),

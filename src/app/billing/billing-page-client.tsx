@@ -17,6 +17,12 @@ type Billing = {
   portalUrl: string | null;
   checkoutEnabled?: boolean;
   dodoMode?: "test" | "live" | null;
+  dodoDiagnostics?: {
+    mode: "test" | "live";
+    apiBase: string;
+    keyPrefix: string | null;
+    products: Record<string, boolean>;
+  } | null;
 };
 
 const PLAN_COPY: Record<
@@ -98,7 +104,13 @@ export default function BillingPageClient() {
         window.location.href = "/signin?callbackURL=/billing";
         return;
       }
-      if (!res.ok) throw new Error(body.error ?? "Could not start checkout");
+      if (!res.ok) {
+        const detail =
+          body.source === "dodo"
+            ? body.error
+            : body.error ?? "Could not start checkout";
+        throw new Error(detail);
+      }
       if (!body.checkoutUrl) throw new Error("Checkout URL missing");
       window.location.href = body.checkoutUrl;
     } catch (e) {
