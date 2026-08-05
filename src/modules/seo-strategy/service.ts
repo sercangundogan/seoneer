@@ -32,7 +32,9 @@ import { classifyPath } from "@/modules/github/path-policy";
 import {
   applyMetadataPatches,
   assertUpdatePreservesBody,
+  ensureCreatedPostPublishDate,
   splitFrontmatter,
+  todayPublishDate,
 } from "@/modules/content-patch/frontmatter";
 import {
   applyInternalLinkPatches,
@@ -971,6 +973,7 @@ async function runWriterStage(
         content: `---
 title: ${brief.metadata.title}
 description: ${brief.metadata.description}
+date: "${todayPublishDate()}"
 ---
 
 # ${brief.workingTitle}
@@ -1004,6 +1007,7 @@ This update was prepared by Seoneer as a reviewable repository change. Claims ar
         content: `---
 title: Hello from your SEO engineer
 description: Starter post establishing the blog foundation for organic growth.
+date: "${todayPublishDate()}"
 ---
 
 # Hello from your SEO engineer
@@ -1044,13 +1048,15 @@ export default function robots(): MetadataRoute.Robots {
 
   if (env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY) {
     try {
+      const publishDate = todayPublishDate();
       const result = await generateStructured({
         tier: "strong",
         system: `You are the Writer agent. Produce file changes only.
 For operation "update", you MUST include the COMPLETE original file content with only the intended edits.
 Never replace an article with only frontmatter/title/description.
-Never fabricate statistics, quotes, customers, or product capabilities.`,
-        prompt: JSON.stringify({ brief, profile }),
+Never fabricate statistics, quotes, customers, or product capabilities.
+For new Markdown/MDX posts (operation "create"), frontmatter date MUST be exactly "${publishDate}" (YYYY-MM-DD). Never invent past or future dates.`,
+        prompt: JSON.stringify({ brief, profile, publishDate }),
         schema: writerOutputSchema,
       });
       draft = result.object;
@@ -1058,6 +1064,20 @@ Never fabricate statistics, quotes, customers, or product capabilities.`,
       // keep heuristic draft
     }
   }
+
+  // Deterministic: never trust the model for publish dates on new posts.
+  const publishDate = todayPublishDate();
+  draft = {
+    ...draft,
+    files: draft.files.map((file) => {
+      if (file.operation !== "create") return file;
+      if (!/\.(md|mdx)$/i.test(file.path)) return file;
+      return {
+        ...file,
+        content: ensureCreatedPostPublishDate(file.content, publishDate),
+      };
+    }),
+  };
 
   await db.insert(schema.agentRuns).values({
     seoActionId,

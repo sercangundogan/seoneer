@@ -40,12 +40,12 @@ function setYamlField(frontmatter: string, key: string, value: string): string {
 }
 
 /**
- * Update title/description in YAML frontmatter while keeping the body byte-for-byte
+ * Update title/description/date in YAML frontmatter while keeping the body byte-for-byte
  * (aside from normalizing the closing frontmatter newline).
  */
 export function upsertFrontmatterFields(
   content: string,
-  fields: { title?: string; description?: string },
+  fields: { title?: string; description?: string; date?: string },
 ): string {
   const { hasFrontmatter, frontmatter, body } = splitFrontmatter(content);
   let fm = hasFrontmatter ? frontmatter : "";
@@ -53,6 +53,7 @@ export function upsertFrontmatterFields(
   if (fields.description !== undefined) {
     fm = setYamlField(fm, "description", fields.description);
   }
+  if (fields.date !== undefined) fm = setYamlField(fm, "date", fields.date);
   if (!fm.trim() && !hasFrontmatter) {
     // No frontmatter and nothing to set
     return content;
@@ -60,6 +61,22 @@ export function upsertFrontmatterFields(
   const bodyPart = hasFrontmatter ? body : content;
   // Preserve whether original body started immediately after --- or with blank lines
   return `---\n${fm.trimEnd()}\n---\n${bodyPart.startsWith("\n") || bodyPart.length === 0 ? bodyPart : `\n${bodyPart}`}`;
+}
+
+/** Calendar date (YYYY-MM-DD) in UTC — used as the publish date for new posts. */
+export function todayPublishDate(now = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/**
+ * Force `date` frontmatter on newly created Markdown/MDX posts.
+ * LLMs often invent stale dates; publish date must be the day the draft is created.
+ */
+export function ensureCreatedPostPublishDate(
+  content: string,
+  publishDate: string = todayPublishDate(),
+): string {
+  return upsertFrontmatterFields(content, { date: publishDate });
 }
 
 export function bodyFingerprint(content: string): string {

@@ -27,6 +27,8 @@ import { sha256 } from "@/lib/crypto";
 import {
   applyMetadataPatches,
   assertUpdatePreservesBody,
+  ensureCreatedPostPublishDate,
+  todayPublishDate,
   upsertFrontmatterFields,
 } from "@/modules/content-patch/frontmatter";
 import {
@@ -67,6 +69,24 @@ More content that must survive.
     expect(next).toContain("Full article body with **markdown** and details.");
     expect(next).toContain("More content that must survive.");
     expect(assertUpdatePreservesBody(original, next).ok).toBe(true);
+  });
+
+  it("forces today's publish date on newly created posts", () => {
+    const invented = `---
+title: "Old invented date post"
+description: "Desc"
+date: "2024-06-10"
+---
+
+# Body
+
+Content here.
+`;
+    const fixed = ensureCreatedPostPublishDate(invented, "2026-08-05");
+    expect(fixed).toContain('date: "2026-08-05"');
+    expect(fixed).not.toContain("2024-06-10");
+    expect(fixed).toContain("Content here.");
+    expect(todayPublishDate(new Date("2026-08-05T15:00:00.000Z"))).toBe("2026-08-05");
   });
 
   it("rejects updates that wipe the body", () => {
