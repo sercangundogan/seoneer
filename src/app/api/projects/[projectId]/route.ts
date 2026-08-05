@@ -20,6 +20,7 @@ import {
 import { workProgramInputSchema } from "@/modules/work-programs/catalog";
 import { db, schema } from "@/lib/db";
 import { syncOpenPullRequestForProject } from "@/modules/pull-requests/sync";
+import { isGscSiteResolved } from "@/modules/search-console/status";
 
 type Params = { params: Promise<{ projectId: string }> };
 
@@ -95,8 +96,12 @@ export async function GET(_req: Request, { params }: Params) {
       billing,
       workPrograms: serializeWorkPrograms(workProgramRows),
       gsc: gscConnection
-        ? { connected: true as const, siteUrl: gscConnection.siteUrl }
-        : { connected: false as const, siteUrl: null },
+        ? {
+            connected: true as const,
+            siteUrl: gscConnection.siteUrl,
+            resolved: isGscSiteResolved(gscConnection.siteUrl),
+          }
+        : { connected: false as const, siteUrl: null, resolved: false },
       latestPullRequest: latestPullRequest
         ? {
             id: latestPullRequest.id,

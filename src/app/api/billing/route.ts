@@ -7,6 +7,7 @@ import {
   dodoMode,
   isDodoConfigured,
   productIdForPlan,
+  resolvePlanPrices,
 } from "@/modules/billing/dodo";
 import { db, schema } from "@/lib/db";
 import { eq } from "drizzle-orm";
@@ -35,11 +36,15 @@ export async function GET() {
       }
     }
 
+    const planEntries = Object.entries(PLAN_CREDITS);
+    const prices = await resolvePlanPrices(planEntries.map(([plan]) => plan));
+
     return json({
       ...state,
-      plans: Object.entries(PLAN_CREDITS).map(([plan, credits]) => ({
+      plans: planEntries.map(([plan, credits]) => ({
         plan,
         credits,
+        price: prices[plan] ?? null,
         productConfigured:
           plan === "free" || Boolean(productIdForPlan(plan as "starter" | "growth" | "scale")),
       })),

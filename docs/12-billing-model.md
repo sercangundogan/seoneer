@@ -10,14 +10,14 @@ Users buy **SEO Action credits**, not model tokens. Credits map to valuable comp
 
 ## Plans (initial)
 
-| Plan | Price (placeholder) | Repos | Monthly SEO Action credits | Notes |
+| Plan | Price | Repos | Monthly SEO Action credits | Notes |
 |---|---|---|---|---|
 | Free | $0 | 1 | Entitlement pack (not recurring unlimited) | Analysis, audit, limited keywords, 1 brief, 1 sample PR |
-| Starter | TBD | 1 | e.g. 10 | Core loop |
-| Growth | TBD | 3 | e.g. 30 | Small teams |
-| Scale | TBD | 10 | e.g. 100 | Higher caps |
+| Starter | $39/mo | 1 | 10 | Core loop |
+| Growth | $99/mo | 3 | 30 | Small teams |
+| Scale | $249/mo | 10 | 100 | Higher caps |
 
-Exact USD prices are set at launch; schema stores plan codes, not hardcoded UI-only numbers.
+Prices are shown on `/billing` from Dodo product data (with static fallbacks). Charge amounts live on the Dodo products.
 
 ## Free entitlement
 

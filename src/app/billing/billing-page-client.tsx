@@ -5,6 +5,13 @@ import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/dashboard/app-shell";
 import { Button, Skeleton } from "@/components/ui/primitives";
 
+type PlanPrice = {
+  amountCents: number;
+  currency: string;
+  interval: "month" | "year" | "week" | "day";
+  intervalCount: number;
+};
+
 type Billing = {
   subscription?: { plan: string; status: string };
   credits?: { balance: number } | null;
@@ -13,7 +20,12 @@ type Billing = {
     briefUsed: boolean;
     initialAuditUsed: boolean;
   };
-  plans: { plan: string; credits: number; productConfigured?: boolean }[];
+  plans: {
+    plan: string;
+    credits: number;
+    price?: PlanPrice | null;
+    productConfigured?: boolean;
+  }[];
   portalUrl: string | null;
   checkoutEnabled?: boolean;
   dodoMode?: "test" | "live" | null;
@@ -51,6 +63,29 @@ const PLAN_COPY: Record<
   },
 };
 
+const PRICE_FALLBACKS: Record<string, PlanPrice> = {
+  free: { amountCents: 0, currency: "USD", interval: "month", intervalCount: 1 },
+  starter: { amountCents: 3900, currency: "USD", interval: "month", intervalCount: 1 },
+  growth: { amountCents: 9900, currency: "USD", interval: "month", intervalCount: 1 },
+  scale: { amountCents: 24900, currency: "USD", interval: "month", intervalCount: 1 },
+};
+
+function formatMoney(amountCents: number, currency: string) {
+  const amount = amountCents / 100;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: amount % 1 === 0 ? 0 : 2,
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
+function intervalSuffix(price: PlanPrice) {
+  if (price.amountCents === 0) return "";
+  if (price.intervalCount === 1) return `/${price.interval}`;
+  return `/${price.intervalCount} ${price.interval}s`;
+}
+
 function PlanSkeleton() {
   return (
     <div
@@ -58,6 +93,7 @@ function PlanSkeleton() {
       aria-hidden
     >
       <Skeleton className="h-6 w-24" />
+      <Skeleton className="mt-4 h-8 w-28" />
       <Skeleton className="mt-4 h-4 w-full" />
       <Skeleton className="mt-2 h-4 w-[80%]" />
       <Skeleton className="mt-3 h-4 w-full" />
@@ -176,6 +212,7 @@ export default function BillingPageClient() {
                   : `${plan.credits} SEO Actions each month.`,
               example: "One credit = one pull request–ready SEO improvement.",
             };
+            const price = plan.price ?? PRICE_FALLBACKS[plan.plan] ?? null;
             const current = data?.subscription?.plan === plan.plan;
             const canCheckout =
               plan.plan !== "free" &&
@@ -193,7 +230,21 @@ export default function BillingPageClient() {
                 }`}
               >
                 <h2 className="text-lg font-medium">{copy.title}</h2>
-                <p className="mt-2 text-sm text-[var(--fg)]">{copy.blurb}</p>
+                {price ? (
+                  <p className="mt-3 flex items-baseline gap-1">
+                    <span className="text-3xl font-semibold tracking-tight text-[var(--fg)]">
+                      {formatMoney(price.amountCents, price.currency)}
+                    </span>
+                    {price.amountCents === 0 ? (
+                      <span className="text-sm text-[var(--fg-muted)]">forever</span>
+                    ) : (
+                      <span className="text-sm text-[var(--fg-muted)]">
+                        {intervalSuffix(price)}
+                      </span>
+                    )}
+                  </p>
+                ) : null}
+                <p className="mt-3 text-sm text-[var(--fg)]">{copy.blurb}</p>
                 <p className="mt-2 flex-1 text-sm text-[var(--fg-muted)]">{copy.example}</p>
                 {current ? (
                   <p className="mt-5 text-xs font-medium text-[var(--accent)]">

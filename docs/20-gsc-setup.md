@@ -74,6 +74,16 @@ https://www.googleapis.com/auth/webmasters.readonly
 
 No write access to Search Console or Analytics.
 
+## After connect: pick the property
+
+OAuth authorizes your Google account. Seoneer then lists verified Search Console properties:
+
+- **One property** → selected automatically
+- **Multiple properties** → choose which one to use on the project page
+- **None** → add a property in [Search Console](https://search.google.com/search-console) first, then reconnect
+
+The stored `site_url` looks like `https://example.com/` or `sc-domain:example.com` (domain property). Placeholder values such as `sc-domain:example.com` from older builds mean the real property was never selected — open the project and pick one (or reconnect).
+
 ## Troubleshooting
 
 ### “App is being tested / only approved test users can access” (or Turkish: *Google doğrulama sürecini tamamlamadı*)
@@ -86,6 +96,10 @@ The OAuth consent screen is in **Testing**. Google blocks everyone except listed
 4. Save, wait ~1 minute, try **Connect Search Console** again
 
 Publishing the app to **Production** lets any Google user connect, but sensitive scopes (including Search Console) often need Google’s verification. For personal/dev use, stay in **Testing** and add test users.
+
+### Connected but shows `sc-domain:example.com`
+
+Older builds stored a placeholder instead of listing your sites. Refresh the project page — you should see **Choose property**. If listing fails, click **Reconnect** (or revoke Seoneer at [Google account permissions](https://myaccount.google.com/permissions) first if Google stops returning a refresh token).
 
 ## Checklist
 

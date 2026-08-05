@@ -107,6 +107,14 @@ function ProjectPageInner() {
   const [gscJustConnected, setGscJustConnected] = useState(
     () => searchParams.get("gsc") === "connected",
   );
+  const [gscNeedsSelect, setGscNeedsSelect] = useState(
+    () => searchParams.get("gsc") === "select",
+  );
+  const [gscNoSites, setGscNoSites] = useState(() => searchParams.get("gsc") === "no_sites");
+  const [gscError, setGscError] = useState(() => {
+    if (searchParams.get("gsc") !== "error") return "";
+    return searchParams.get("reason") ?? "Search Console connect failed";
+  });
   const programsDirtyRef = useRef(false);
 
   const refresh = useCallback(async () => {
@@ -122,10 +130,18 @@ function ProjectPageInner() {
   }, [params.projectId]);
 
   // Arrive from onboarding with ?live=1 → keep polling until the agent settles
+  // Arrive from GSC OAuth with ?gsc=…
   useEffect(() => {
-    if (searchParams.get("live") !== "1" && searchParams.get("gsc") !== "connected") return;
-    if (searchParams.get("live") === "1") setForcePoll(true);
-    if (searchParams.get("gsc") === "connected") setGscJustConnected(true);
+    const live = searchParams.get("live") === "1";
+    const gsc = searchParams.get("gsc");
+    if (!live && !gsc) return;
+    if (live) setForcePoll(true);
+    if (gsc === "connected") setGscJustConnected(true);
+    if (gsc === "select") setGscNeedsSelect(true);
+    if (gsc === "no_sites") setGscNoSites(true);
+    if (gsc === "error") {
+      setGscError(searchParams.get("reason") ?? "Search Console connect failed");
+    }
     router.replace(`/projects/${params.projectId}`, { scroll: false });
   }, [searchParams, params.projectId, router]);
 
@@ -327,7 +343,16 @@ function ProjectPageInner() {
         gsc={gsc}
         disabled={cycleRunning}
         justConnected={gscJustConnected}
-        onConnected={refresh}
+        needsSiteSelect={gscNeedsSelect}
+        noSites={gscNoSites}
+        connectError={gscError}
+        onConnected={async () => {
+          setGscNeedsSelect(false);
+          setGscNoSites(false);
+          setGscError("");
+          setGscJustConnected(true);
+          await refresh();
+        }}
       />
 
       <section className="mt-8 max-w-xl">

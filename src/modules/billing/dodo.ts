@@ -186,3 +186,83 @@ export async function createCustomerPortalSession(input: {
   if (!data.link) throw new Error("Dodo did not return a portal link");
   return data.link;
 }
+
+export type PlanPrice = {
+  amountCents: number;
+  currency: string;
+  interval: "month" | "year" | "week" | "day";
+  intervalCount: number;
+};
+
+/** Display fallbacks when Dodo product fetch is unavailable (matches live products). */
+export const PLAN_PRICE_FALLBACKS: Record<string, PlanPrice> = {
+  free: { amountCents: 0, currency: "USD", interval: "month", intervalCount: 1 },
+  starter: { amountCents: 3900, currency: "USD", interval: "month", intervalCount: 1 },
+  growth: { amountCents: 9900, currency: "USD", interval: "month", intervalCount: 1 },
+  scale: { amountCents: 24900, currency: "USD", interval: "month", intervalCount: 1 },
+};
+
+type DodoProductPrice = {
+  type?: string;
+  price?: number;
+  fixed_price?: number;
+  currency?: string;
+  payment_frequency_count?: number;
+  payment_frequency_interval?: string;
+};
+
+function normalizeInterval(raw: string | undefined): PlanPrice["interval"] {
+  const value = (raw ?? "Month").toLowerCase();
+  if (value === "year") return "year";
+  if (value === "week") return "week";
+  if (value === "day") return "day";
+  return "month";
+}
+
+function parseProductPrice(price: DodoProductPrice | null | undefined): PlanPrice | null {
+  if (!price) return null;
+  const amountCents =
+    typeof price.price === "number"
+      ? price.price
+      : typeof price.fixed_price === "number"
+        ? price.fixed_price
+        : null;
+  if (amountCents === null || !price.currency) return null;
+  return {
+    amountCents,
+    currency: price.currency,
+    interval: normalizeInterval(price.payment_frequency_interval),
+    intervalCount: price.payment_frequency_count ?? 1,
+  };
+}
+
+export async function fetchProductPrice(productId: string): Promise<PlanPrice | null> {
+  try {
+    const data = (await dodoFetch(`/products/${encodeURIComponent(productId)}`)) as {
+      price?: DodoProductPrice;
+    };
+    return parseProductPrice(data.price);
+  } catch {
+    return null;
+  }
+}
+
+export async function resolvePlanPrices(
+  plans: string[],
+): Promise<Record<string, PlanPrice>> {
+  const entries = await Promise.all(
+    plans.map(async (plan) => {
+      if (plan === "free") {
+        return [plan, PLAN_PRICE_FALLBACKS.free] as const;
+      }
+      if (plan !== "starter" && plan !== "growth" && plan !== "scale") {
+        return [plan, PLAN_PRICE_FALLBACKS[plan] ?? PLAN_PRICE_FALLBACKS.starter] as const;
+      }
+      const productId = productIdForPlan(plan);
+      const live =
+        productId && isDodoConfigured() ? await fetchProductPrice(productId) : null;
+      return [plan, live ?? PLAN_PRICE_FALLBACKS[plan]] as const;
+    }),
+  );
+  return Object.fromEntries(entries);
+}
