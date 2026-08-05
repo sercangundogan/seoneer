@@ -16,7 +16,10 @@ export const auth = betterAuth({
     },
   }),
   secret: env.BETTER_AUTH_SECRET,
-  baseURL: env.BETTER_AUTH_URL,
+  baseURL: env.BETTER_AUTH_URL ?? env.NEXT_PUBLIC_APP_URL,
+  advanced: {
+    useSecureCookies: env.NODE_ENV === "production",
+  },
   socialProviders: {
     github: {
       clientId: env.GITHUB_CLIENT_ID ?? env.GITHUB_APP_CLIENT_ID ?? "missing",

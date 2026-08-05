@@ -70,7 +70,11 @@ export default function BillingPageClient() {
   useEffect(() => {
     void (async () => {
       try {
-        const res = await fetch("/api/billing");
+        const res = await fetch("/api/billing", { credentials: "same-origin" });
+        if (res.status === 401) {
+          window.location.href = "/signin?callbackURL=/billing";
+          return;
+        }
         if (res.ok) setData(await res.json());
       } finally {
         setLoading(false);
@@ -85,10 +89,15 @@ export default function BillingPageClient() {
     try {
       const res = await fetch("/api/billing/checkout", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ plan }),
       });
       const body = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        window.location.href = "/signin?callbackURL=/billing";
+        return;
+      }
       if (!res.ok) throw new Error(body.error ?? "Could not start checkout");
       if (!body.checkoutUrl) throw new Error("Checkout URL missing");
       window.location.href = body.checkoutUrl;

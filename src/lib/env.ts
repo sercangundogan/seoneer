@@ -1,10 +1,18 @@
 import { z } from "zod";
 
+function resolveBetterAuthUrl(): string {
+  const explicit = process.env.BETTER_AUTH_URL?.trim();
+  if (explicit && !explicit.includes("localhost")) return explicit;
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (appUrl && !appUrl.includes("localhost")) return appUrl;
+  return explicit ?? appUrl ?? "http://localhost:3000";
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.string().min(1).default("postgres://postgres:postgres@localhost:5432/seoneer"),
   BETTER_AUTH_SECRET: z.string().min(32).default("dev-secret-change-me-32-characters!!"),
-  BETTER_AUTH_URL: z.string().url().default("http://localhost:3000"),
+  BETTER_AUTH_URL: z.string().url(),
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
   GITHUB_APP_ID: z.string().optional(),
@@ -34,7 +42,11 @@ const envSchema = z.object({
 export type Env = z.infer<typeof envSchema>;
 
 function loadEnv(): Env {
-  const parsed = envSchema.safeParse(process.env);
+  const withAuthUrl = {
+    ...process.env,
+    BETTER_AUTH_URL: resolveBetterAuthUrl(),
+  };
+  const parsed = envSchema.safeParse(withAuthUrl);
   if (!parsed.success) {
     console.error("Invalid environment variables", parsed.error.flatten().fieldErrors);
     throw new Error("Invalid environment variables");

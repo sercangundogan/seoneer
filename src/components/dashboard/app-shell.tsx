@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SignOutButton } from "@/components/dashboard/sign-out-button";
 
 const links = [
   { href: "/dashboard", label: "Overview" },
@@ -14,12 +15,12 @@ export function AppShell({
 }) {
   return (
     <div className="min-h-screen md:grid md:grid-cols-[220px_1fr]">
-      <aside className="border-b border-[var(--border)] bg-[var(--bg-elevated)] px-5 py-6 md:border-b-0 md:border-r">
+      <aside className="flex flex-col border-b border-[var(--border)] bg-[var(--bg-elevated)] px-5 py-6 md:min-h-screen md:border-b-0 md:border-r">
         <Link href="/dashboard" className="text-lg font-semibold tracking-tight">
           Seoneer
         </Link>
         <p className="mt-1 text-xs text-[var(--fg-muted)]">SEO operations</p>
-        <nav className="mt-8 flex flex-col gap-1">
+        <nav className="mt-8 flex flex-1 flex-col gap-1">
           {links.map((link) => (
             <Link
               key={link.href}
@@ -30,6 +31,9 @@ export function AppShell({
             </Link>
           ))}
         </nav>
+        <div className="mt-8 border-t border-[var(--border)] pt-4">
+          <SignOutButton />
+        </div>
       </aside>
       <main className="px-6 py-8 md:px-10">
         {title ? (
