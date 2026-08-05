@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { PaymentSuccessModal } from "@/components/billing/payment-success-modal";
 import { AppShell } from "@/components/dashboard/app-shell";
 import { Button, Skeleton } from "@/components/ui/primitives";
 
@@ -103,11 +104,13 @@ function PlanSkeleton() {
 }
 
 export default function BillingPageClient() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [data, setData] = useState<Billing | null>(null);
   const [loading, setLoading] = useState(true);
   const [checkoutPlan, setCheckoutPlan] = useState<string | null>(null);
   const [checkoutError, setCheckoutError] = useState("");
+  const [showPaymentSuccess, setShowPaymentSuccess] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -122,6 +125,16 @@ export default function BillingPageClient() {
         setLoading(false);
       }
     })();
+  }, []);
+
+  useEffect(() => {
+    if (searchParams.get("checkout") !== "success") return;
+    setShowPaymentSuccess(true);
+    router.replace("/billing", { scroll: false });
+  }, [searchParams, router]);
+
+  const dismissPaymentSuccess = useCallback(() => {
+    setShowPaymentSuccess(false);
   }, []);
 
   async function startCheckout(plan: string) {
@@ -157,16 +170,10 @@ export default function BillingPageClient() {
 
   const balance = data?.credits?.balance ?? 0;
   const sampleLeft = data?.entitlement && !data.entitlement.samplePrUsed;
-  const checkoutSuccess = searchParams.get("checkout") === "success";
 
   return (
     <AppShell title="Billing">
-      {checkoutSuccess ? (
-        <div className="mb-6 rounded-[var(--radius)] border border-[var(--success)]/30 bg-[var(--bg-elevated)] px-4 py-3 text-sm text-[var(--success)]">
-          Payment received — your plan and credits will update shortly after Dodo confirms the
-          subscription.
-        </div>
-      ) : null}
+      <PaymentSuccessModal open={showPaymentSuccess} onClose={dismissPaymentSuccess} />
 
       {checkoutError ? (
         <div className="mb-6 rounded-[var(--radius)] border border-[var(--danger)]/30 bg-[var(--bg-elevated)] px-4 py-3 text-sm text-[var(--danger)]">
