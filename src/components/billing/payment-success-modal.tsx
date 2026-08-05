@@ -5,15 +5,23 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/primitives";
 
-type ProjectSummary = {
-  id: string;
-  name: string;
-};
-
 type PaymentSuccessModalProps = {
   open: boolean;
   onClose: () => void;
 };
+
+const ACTIONS = [
+  {
+    href: "/dashboard",
+    title: "Go to Overview",
+    description: "Check agent status and kick off your next SEO Action.",
+  },
+  {
+    href: "/projects/new",
+    title: "Add a project",
+    description: "Connect a GitHub repo so Seoneer can open pull requests.",
+  },
+] as const;
 
 const CONFETTI_COLORS = ["#0f6b5c", "#1f6b3a", "#2a9d8f", "#c4a35a", "#e8e4d9", "#141414"];
 
@@ -149,7 +157,6 @@ export function PaymentSuccessModal({ open, onClose }: PaymentSuccessModalProps)
   const [mounted, setMounted] = useState(false);
   const [present, setPresent] = useState(false);
   const [visible, setVisible] = useState(false);
-  const [project, setProject] = useState<ProjectSummary | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -169,14 +176,6 @@ export function PaymentSuccessModal({ open, onClose }: PaymentSuccessModalProps)
     document.body.style.overflow = "hidden";
     const focusTimer = window.setTimeout(() => dialogRef.current?.focus(), 50);
 
-    void fetch("/api/projects", { credentials: "same-origin" })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((body) => {
-        const list = (body?.projects ?? []) as ProjectSummary[];
-        setProject(list[0] ?? null);
-      })
-      .catch(() => setProject(null));
-
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
@@ -191,34 +190,6 @@ export function PaymentSuccessModal({ open, onClose }: PaymentSuccessModalProps)
   }, [open, onClose]);
 
   if (!mounted || !present) return null;
-
-  const actions = [
-    {
-      href: "/dashboard",
-      title: "Go to Overview",
-      description: "Check agent status and kick off your next SEO Action.",
-    },
-    project
-      ? {
-          href: `/projects/${project.id}`,
-          title: `Open ${project.name}`,
-          description: "Review work programs and let Seoneer ship improvements.",
-        }
-      : {
-          href: "/projects/new",
-          title: "Connect a repository",
-          description: "Link a GitHub repo so Seoneer can open pull requests.",
-        },
-    ...(project
-      ? [
-          {
-            href: "/projects/new",
-            title: "Add another project",
-            description: "Use your new credits across more repos when you are ready.",
-          },
-        ]
-      : []),
-  ];
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6" role="presentation">
@@ -301,9 +272,9 @@ export function PaymentSuccessModal({ open, onClose }: PaymentSuccessModalProps)
               What you can do now
             </p>
             <ul className="mt-3 space-y-2">
-              {actions.map((action, index) => (
+              {ACTIONS.map((action, index) => (
                 <li
-                  key={action.href + action.title}
+                  key={action.href}
                   className={`transition-all duration-500 ease-out ${
                     visible ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"
                   }`}
