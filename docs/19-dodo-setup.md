@@ -1,12 +1,29 @@
 # Dodo Payments setup
 
-## API key
+## API key & products
 
 Put your secret API key in `.env`:
 
 ```env
-DODO_API_KEY=...
+DODO_API_KEY=test_...   # sandbox — use test_* keys only in test mode
+DODO_WEBHOOK_SECRET=whsec_...
+DODO_PRODUCT_STARTER=pdt_...
+DODO_PRODUCT_GROWTH=pdt_...
+DODO_PRODUCT_SCALE=pdt_...
 ```
+
+Create **subscription products** in the Dodo dashboard for Starter, Growth, and Scale. Copy each product ID into the matching env var. Without product IDs, upgrade buttons stay disabled.
+
+Checkout uses `POST /checkouts` with `metadata.workspace_id` so webhooks can activate the correct workspace.
+
+## Testing without a real charge
+
+1. Use a **test mode** API key (`test_…`) from the Dodo dashboard.
+2. Billing page shows a test-mode banner with the sandbox card: `4242 4242 4242 4242`, expiry `06/32`, CVC `123`.
+3. Complete checkout on Dodo’s hosted page — no real money moves.
+4. Point webhooks to your public URL (ngrok or production) so `subscription.active` updates plan + credits.
+
+Other test cards: `4000 0000 0000 0002` (decline), `4000 0000 0000 9995` (insufficient funds).
 
 ## Webhook endpoint (dashboard)
 

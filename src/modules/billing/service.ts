@@ -1,6 +1,7 @@
 import { and, eq, gt } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { writeAuditLog } from "@/modules/audit-logs/service";
+import { planForProductId, type PaidPlan } from "@/modules/billing/dodo";
 
 export async function grantFreeEntitlement(workspaceId: string) {
   const existing = await db.query.freeEntitlements.findFirst({
@@ -133,50 +134,90 @@ export async function processDodoWebhook(input: {
   const type = String(input.payload.type ?? input.payload.event ?? "");
   const data = (input.payload.data ?? input.payload) as Record<string, unknown>;
   const metadata = (data.metadata ?? {}) as Record<string, unknown>;
-  const workspaceId = String(data.workspace_id ?? metadata.workspace_id ?? "");
+  const workspaceId = String(
+    metadata.workspace_id ?? data.workspace_id ?? metadata.workspaceId ?? "",
+  );
 
-  if (workspaceId && (type.includes("subscription") || type.includes("checkout"))) {
-    const plan = String(data.plan ?? data.product_id ?? "starter");
+  const productCart = data.product_cart as Array<{ product_id?: string }> | undefined;
+  const productId = String(
+    data.product_id ?? productCart?.[0]?.product_id ?? metadata.product_id ?? "",
+  );
+  const mappedPlan = productId ? planForProductId(productId) : null;
+  const metadataPlan = String(metadata.plan ?? "");
+  const planFromPayload = String(data.plan ?? "");
+  const plan: PaidPlan | string =
+    mappedPlan ??
+    (["starter", "growth", "scale"].includes(metadataPlan)
+      ? metadataPlan
+      : ["starter", "growth", "scale"].includes(planFromPayload)
+        ? planFromPayload
+        : "starter");
+
+  const customer =
+    typeof data.customer === "object" && data.customer !== null
+      ? (data.customer as { customer_id?: string })
+      : null;
+  const customerId = String(data.customer_id ?? customer?.customer_id ?? "");
+
+  if (
+    workspaceId &&
+    (type.includes("subscription") ||
+      type.includes("checkout") ||
+      type.includes("payment.succeeded"))
+  ) {
     const statusRaw = String(data.status ?? "active");
     const status =
       statusRaw === "cancelled" || statusRaw === "canceled"
         ? "cancelled"
         : statusRaw === "past_due"
           ? "past_due"
-          : statusRaw === "paused"
+          : statusRaw === "paused" || statusRaw === "on_hold"
             ? "paused"
             : "active";
+
+    const skipCreditGrant =
+      type.includes("payment.failed") ||
+      type.includes("subscription.cancelled") ||
+      type.includes("subscription.expired");
 
     await db
       .update(schema.subscriptions)
       .set({
         plan,
         status,
-        dodoCustomerId: data.customer_id ? String(data.customer_id) : undefined,
-        dodoSubscriptionId: data.subscription_id ? String(data.subscription_id) : undefined,
+        dodoCustomerId: customerId || undefined,
+        dodoSubscriptionId: data.subscription_id
+          ? String(data.subscription_id)
+          : data.id
+            ? String(data.id)
+            : undefined,
         currentPeriodEnd: data.current_period_end
           ? new Date(String(data.current_period_end))
-          : undefined,
+          : data.next_billing_date
+            ? new Date(String(data.next_billing_date))
+            : undefined,
         updatedAt: new Date(),
       })
       .where(eq(schema.subscriptions.workspaceId, workspaceId));
 
-    const creditAmount = plan === "growth" ? 30 : plan === "scale" ? 100 : 10;
-    const periodStart = new Date();
-    const periodEnd = new Date();
-    periodEnd.setMonth(periodEnd.getMonth() + 1);
-    await db.insert(schema.seoActionCredits).values({
-      workspaceId,
-      balance: creditAmount,
-      periodStart,
-      periodEnd,
-    });
+    if (!skipCreditGrant && PLAN_CREDITS[plan] > 0) {
+      const creditAmount = PLAN_CREDITS[plan] ?? 10;
+      const periodStart = new Date();
+      const periodEnd = new Date();
+      periodEnd.setMonth(periodEnd.getMonth() + 1);
+      await db.insert(schema.seoActionCredits).values({
+        workspaceId,
+        balance: creditAmount,
+        periodStart,
+        periodEnd,
+      });
+    }
 
     await writeAuditLog({
       workspaceId,
       action: "billing.subscription_updated",
       summary: `Subscription updated to ${plan} (${status})`,
-      evidence: { type, externalId: input.externalId },
+      evidence: { type, externalId: input.externalId, productId },
     });
   }
 
