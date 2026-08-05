@@ -25,8 +25,10 @@ export const initialAuditTask = task({
 
 export const runActionCycleTask = task({
   id: "seo.runActionCycle",
-  run: async (payload: { projectId: string }) => {
-    return runActionCycle(payload.projectId);
+  run: async (payload: { projectId: string; preferProgramKey?: string }) => {
+    return runActionCycle(payload.projectId, {
+      preferProgramKey: payload.preferProgramKey,
+    });
   },
 });
 

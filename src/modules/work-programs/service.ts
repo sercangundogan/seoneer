@@ -139,6 +139,33 @@ export async function preferredDueProgramKeys(
   return source.map((r) => r.programKey as WorkProgramKey);
 }
 
+/** Mark a program due immediately so a manual run can pick it up. */
+export async function markWorkProgramDueNow(
+  projectId: string,
+  programKey: WorkProgramKey,
+  now = new Date(),
+): Promise<ProjectWorkProgramRow> {
+  const row = await db.query.projectWorkPrograms.findFirst({
+    where: and(
+      eq(schema.projectWorkPrograms.projectId, projectId),
+      eq(schema.projectWorkPrograms.programKey, programKey),
+    ),
+  });
+  if (!row) {
+    throw new Error("Enable this work program before running it");
+  }
+  if (!row.enabled) {
+    throw new Error("Enable this work program before running it");
+  }
+
+  const [updated] = await db
+    .update(schema.projectWorkPrograms)
+    .set({ nextRunAt: now, updatedAt: now })
+    .where(eq(schema.projectWorkPrograms.id, row.id))
+    .returning();
+  return updated;
+}
+
 export async function advanceScheduleForAction(
   projectId: string,
   actionType: SeoActionType,

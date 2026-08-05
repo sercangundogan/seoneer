@@ -24,7 +24,12 @@ export async function runJobInline(name: string, payload: Record<string, unknown
       break;
     }
     case "seo.runActionCycle":
-      await runActionCycle(String(payload.projectId));
+      await runActionCycle(String(payload.projectId), {
+        preferProgramKey:
+          typeof payload.preferProgramKey === "string"
+            ? payload.preferProgramKey
+            : undefined,
+      });
       break;
     case "seo.monitorPerformance":
       await runPerformanceAnalysis(String(payload.projectId));

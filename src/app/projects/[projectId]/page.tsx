@@ -27,6 +27,8 @@ type WorkProgramApiRow = {
   programKey: WorkProgramKey;
   enabled: boolean;
   periodDays: PeriodDays;
+  nextRunAt?: string | null;
+  lastRunAt?: string | null;
 };
 
 type ProjectPayload = {
@@ -104,6 +106,7 @@ function ProjectPageInner() {
   const [programDraft, setProgramDraft] = useState<WorkProgramInput[]>(defaultWorkProgramInputs());
   const [savingPrograms, setSavingPrograms] = useState(false);
   const [programMessage, setProgramMessage] = useState("");
+  const [runningProgramKey, setRunningProgramKey] = useState<WorkProgramKey | null>(null);
   const [gscJustConnected, setGscJustConnected] = useState(
     () => searchParams.get("gsc") === "connected",
   );
@@ -185,12 +188,16 @@ function ProjectPageInner() {
     });
     if (status && !isAgentWorking(status) && !stillAwaiting) {
       setForcePoll(false);
+      setRunningProgramKey(null);
     }
   }, [data?.project?.agentStatus, data?.latestPullRequest?.mergeStatus, forcePoll]);
 
   useEffect(() => {
     if (!forcePoll) return;
-    const timeout = window.setTimeout(() => setForcePoll(false), 240_000);
+    const timeout = window.setTimeout(() => {
+      setForcePoll(false);
+      setRunningProgramKey(null);
+    }, 240_000);
     return () => window.clearTimeout(timeout);
   }, [forcePoll]);
 
@@ -228,10 +235,16 @@ function ProjectPageInner() {
     }
   }
 
-  async function runCycle() {
+  async function runCycle(preferProgramKey?: WorkProgramKey) {
     if (busy || forcePoll || isAgentWorking(data?.project?.agentStatus)) return;
+    if (preferProgramKey && programsDirty) {
+      setProgramMessage("Save your program changes before running.");
+      return;
+    }
     setBusy(true);
     setForcePoll(true);
+    setRunningProgramKey(preferProgramKey ?? null);
+    setProgramMessage("");
     setData((prev) =>
       prev
         ? {
@@ -239,7 +252,9 @@ function ProjectPageInner() {
             project: {
               ...prev.project,
               agentStatus: "selecting_action",
-              agentStatusDetail: "Starting SEO action cycle…",
+              agentStatusDetail: preferProgramKey
+                ? "Starting work program…"
+                : "Starting SEO action cycle…",
             },
           }
         : prev,
@@ -248,7 +263,11 @@ function ProjectPageInner() {
       const res = await fetch(`/api/projects/${params.projectId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runActionCycle: true }),
+        body: JSON.stringify(
+          preferProgramKey
+            ? { runWorkProgram: preferProgramKey }
+            : { runActionCycle: true },
+        ),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -258,14 +277,16 @@ function ProjectPageInner() {
       await refresh();
     } catch (e) {
       setForcePoll(false);
+      setRunningProgramKey(null);
+      const message = e instanceof Error ? e.message : "Failed to start SEO action";
+      setProgramMessage(message);
       setData((prev) =>
         prev
           ? {
               ...prev,
               project: {
                 ...prev.project,
-                agentStatusDetail:
-                  e instanceof Error ? e.message : "Failed to start SEO action",
+                agentStatusDetail: message,
               },
             }
           : prev,
@@ -358,13 +379,22 @@ function ProjectPageInner() {
       <section className="mt-8 max-w-xl">
         <h2 className="text-sm font-medium text-[var(--fg-muted)]">Work programs</h2>
         <p className="mt-1 text-sm text-[var(--fg-muted)]">
-          Choose what Seoneer should do, and how often.
+          Choose what Seoneer should do and how often — or run any enabled program now.
         </p>
         <div className="mt-4">
           <WorkProgramsEditor
             value={programDraft}
             onChange={setProgramDraft}
             disabled={savingPrograms || cycleRunning}
+            schedule={Object.fromEntries(
+              (data.workPrograms ?? []).map((row) => [
+                row.programKey,
+                { nextRunAt: row.nextRunAt ?? null, lastRunAt: row.lastRunAt ?? null },
+              ]),
+            )}
+            onRunNow={(key) => void runCycle(key)}
+            runNowDisabled={runDisabled || programsDirty}
+            runningProgramKey={runningProgramKey}
           />
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -376,6 +406,11 @@ function ProjectPageInner() {
           >
             Save programs
           </Button>
+          {programsDirty && !programMessage ? (
+            <span className="text-sm text-[var(--fg-muted)]">
+              Save changes to enable Run now.
+            </span>
+          ) : null}
           {programMessage ? (
             <span className="text-sm text-[var(--fg-muted)]">{programMessage}</span>
           ) : null}

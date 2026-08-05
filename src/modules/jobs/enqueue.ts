@@ -16,7 +16,7 @@ export type JobName =
 type JobPayloads = {
   "project.buildIntelligence": { projectId: string };
   "project.initialAudit": { projectId: string; runFirstAction?: boolean };
-  "seo.runActionCycle": { projectId: string };
+  "seo.runActionCycle": { projectId: string; preferProgramKey?: string };
   "seo.monitorPerformance": { projectId: string };
   "billing.processWebhook": { externalId: string; payload: Record<string, unknown> };
 };

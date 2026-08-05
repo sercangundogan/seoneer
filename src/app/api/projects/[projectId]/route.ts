@@ -14,10 +14,11 @@ import { getBillingState } from "@/modules/billing/service";
 import { resolveGithubReviewUrl } from "@/modules/github/client";
 import {
   listWorkPrograms,
+  markWorkProgramDueNow,
   saveWorkPrograms,
   serializeWorkPrograms,
 } from "@/modules/work-programs/service";
-import { workProgramInputSchema } from "@/modules/work-programs/catalog";
+import { workProgramInputSchema, workProgramKeySchema, getWorkProgramDefinition } from "@/modules/work-programs/catalog";
 import { db, schema } from "@/lib/db";
 import { syncOpenPullRequestForProject } from "@/modules/pull-requests/sync";
 import { isGscSiteResolved } from "@/modules/search-console/status";
@@ -133,6 +134,8 @@ const patchSchema = z.object({
   startAudit: z.boolean().optional(),
   runFirstAction: z.boolean().optional(),
   runActionCycle: z.boolean().optional(),
+  /** Run a specific work program now (marks it due and starts an action cycle). */
+  runWorkProgram: workProgramKeySchema.optional(),
   monitorPerformance: z.boolean().optional(),
 });
 
@@ -186,7 +189,19 @@ export async function PATCH(request: Request, { params }: Params) {
       });
       jobs.push({ name: "project.initialAudit", id: job.id });
     }
-    if (body.runActionCycle) {
+    if (body.runWorkProgram) {
+      const label = getWorkProgramDefinition(body.runWorkProgram).label;
+      await markWorkProgramDueNow(projectId, body.runWorkProgram);
+      await updateProjectSettings(projectId, session.user.id, {
+        agentStatus: "selecting_action",
+        agentStatusDetail: `Starting “${label}”…`,
+      });
+      const job = await enqueueJob("seo.runActionCycle", {
+        projectId,
+        preferProgramKey: body.runWorkProgram,
+      });
+      jobs.push({ name: "seo.runActionCycle", id: job.id });
+    } else if (body.runActionCycle) {
       await updateProjectSettings(projectId, session.user.id, {
         agentStatus: "selecting_action",
         agentStatusDetail: "Starting SEO action cycle…",

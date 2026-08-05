@@ -52,10 +52,13 @@ import { sendPrReadyEmail } from "@/modules/notifications/service";
 import { recommendCadence } from "@/modules/seo-strategy/cadence";
 import {
   actionTypesForPrograms,
+  workProgramKeySchema,
+  type WorkProgramKey,
 } from "@/modules/work-programs/catalog";
 import {
   advanceScheduleForAction,
   allowedActionTypesForProject,
+  getEnabledWorkPrograms,
   preferredDueProgramKeys,
 } from "@/modules/work-programs/service";
 
@@ -211,7 +214,10 @@ function buildRoadmapItems(
   return items;
 }
 
-export async function selectAction(projectId: string): Promise<ActionSelection> {
+export async function selectAction(
+  projectId: string,
+  options?: { preferProgramKey?: string },
+): Promise<ActionSelection> {
   const intelligence = await getLatestIntelligence(projectId);
   const audit = await db.query.seoAudits.findFirst({
     where: eq(schema.seoAudits.projectId, projectId),
@@ -229,7 +235,16 @@ export async function selectAction(projectId: string): Promise<ActionSelection> 
 
   const profile = intelligence?.profile as ProjectIntelligenceProfile | undefined;
   const allowed = await allowedActionTypesForProject(projectId);
-  const preferredKeys = await preferredDueProgramKeys(projectId);
+  let preferredKeys = await preferredDueProgramKeys(projectId);
+  const preferParsed = options?.preferProgramKey
+    ? workProgramKeySchema.safeParse(options.preferProgramKey)
+    : null;
+  if (preferParsed?.success) {
+    const enabled = await getEnabledWorkPrograms(projectId);
+    if (enabled.some((r) => r.programKey === preferParsed.data)) {
+      preferredKeys = [preferParsed.data as WorkProgramKey];
+    }
+  }
   const preferredTypes =
     preferredKeys.length > 0 ? actionTypesForPrograms(preferredKeys) : allowed;
 
@@ -449,14 +464,17 @@ function heuristicSelectAction(
   };
 }
 
-export async function runActionCycle(projectId: string) {
+export async function runActionCycle(
+  projectId: string,
+  options?: { preferProgramKey?: string },
+) {
   const project = await db.query.projects.findFirst({
     where: eq(schema.projects.id, projectId),
   });
   if (!project) throw new Error("Project not found");
 
   try {
-    return await runActionCycleInner(projectId, project);
+    return await runActionCycleInner(projectId, project, options);
   } catch (error) {
     const message = error instanceof Error ? error.message : "SEO action cycle failed";
     if (!/already waiting|already in progress/i.test(message)) {
@@ -476,6 +494,7 @@ export async function runActionCycle(projectId: string) {
 async function runActionCycleInner(
   projectId: string,
   project: typeof schema.projects.$inferSelect,
+  options?: { preferProgramKey?: string },
 ) {
   const active = await db.query.seoActions.findFirst({
     where: and(
@@ -526,7 +545,7 @@ async function runActionCycleInner(
     "Choosing the highest-value SEO action",
   );
 
-  const selection = await selectAction(projectId);
+  const selection = await selectAction(projectId, options);
   const actionType = selection.selected.actionType;
   // Billing uses catalog weights — never trust unbounded AI cost estimates
   const creditCost = CREDIT_WEIGHTS[actionType] ?? 1;
