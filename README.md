@@ -38,6 +38,12 @@ pnpm db:push
 pnpm dev
 ```
 
+Setup guides:
+
+- [GitHub App](./docs/18-github-app-setup.md) — `GITHUB_APP_*`
+- [Dodo Payments](./docs/19-dodo-setup.md) — `DODO_*`
+- [Google Search Console](./docs/20-gsc-setup.md) — `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`
+
 Scripts:
 
 - `pnpm typecheck`

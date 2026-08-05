@@ -8,6 +8,10 @@ import {
   AutomationUpsell,
   shouldShowAutomationUpsell,
 } from "@/components/dashboard/automation-upsell";
+import {
+  SearchConsolePanel,
+  type GscConnectionInfo,
+} from "@/components/dashboard/search-console-panel";
 import { WorkProgramsEditor } from "@/components/work-programs/work-programs-editor";
 import { Badge, Button } from "@/components/ui/primitives";
 import { isAgentWorking } from "@/lib/agent-status";
@@ -50,6 +54,7 @@ type ProjectPayload = {
     subscription?: { plan: string } | null;
   };
   workPrograms?: WorkProgramApiRow[];
+  gsc?: GscConnectionInfo;
   latestPullRequest?: {
     id: string;
     prNumber: number | null;
@@ -98,6 +103,9 @@ function ProjectPageInner() {
   const [programDraft, setProgramDraft] = useState<WorkProgramInput[]>(defaultWorkProgramInputs());
   const [savingPrograms, setSavingPrograms] = useState(false);
   const [programMessage, setProgramMessage] = useState("");
+  const [gscJustConnected, setGscJustConnected] = useState(
+    () => searchParams.get("gsc") === "connected",
+  );
   const programsDirtyRef = useRef(false);
 
   const refresh = useCallback(async () => {
@@ -114,8 +122,9 @@ function ProjectPageInner() {
 
   // Arrive from onboarding with ?live=1 → keep polling until the agent settles
   useEffect(() => {
-    if (searchParams.get("live") !== "1") return;
-    setForcePoll(true);
+    if (searchParams.get("live") !== "1" && searchParams.get("gsc") !== "connected") return;
+    if (searchParams.get("live") === "1") setForcePoll(true);
+    if (searchParams.get("gsc") === "connected") setGscJustConnected(true);
     router.replace(`/projects/${params.projectId}`, { scroll: false });
   }, [searchParams, params.projectId, router]);
 
@@ -239,15 +248,6 @@ function ProjectPageInner() {
     }
   }
 
-  async function connectGsc() {
-    const res = await fetch("/api/gsc", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId: params.projectId }),
-    });
-    if (res.ok) await refresh();
-  }
-
   if (!data?.project) {
     return (
       <AppShell title="Project">
@@ -256,8 +256,17 @@ function ProjectPageInner() {
     );
   }
 
-  const { project, intelligence, audit, roadmap, actions, logs, billing, latestPullRequest } =
-    data;
+  const {
+    project,
+    intelligence,
+    audit,
+    roadmap,
+    actions,
+    logs,
+    billing,
+    latestPullRequest,
+    gsc,
+  } = data;
   const blocked = project.agentStatus === "blocked";
   const cycleRunning = busy || forcePoll || isAgentWorking(project.agentStatus);
   const awaitingApproval = project.agentStatus === "awaiting_approval";
@@ -278,31 +287,34 @@ function ProjectPageInner() {
         projectId={project.id}
         reviewUrl={reviewUrl}
         actions={
-          <>
-            <Button variant="secondary" onClick={() => void connectGsc()} disabled={cycleRunning}>
-              Connect GSC
-            </Button>
-            <Button
-              onClick={() => void runCycle()}
-              loading={cycleRunning}
-              disabled={runDisabled}
-              title={
-                blocked
-                  ? (project.agentStatusDetail ?? "Agent is blocked")
-                  : awaitingApproval
-                    ? "Approve the pending update before starting another action"
-                    : cycleRunning
-                      ? "SEO action in progress"
-                      : undefined
-              }
-            >
-              {cycleRunning ? "Running…" : "Run SEO action"}
-            </Button>
-          </>
+          <Button
+            onClick={() => void runCycle()}
+            loading={cycleRunning}
+            disabled={runDisabled}
+            title={
+              blocked
+                ? (project.agentStatusDetail ?? "Agent is blocked")
+                : awaitingApproval
+                  ? "Approve the pending update before starting another action"
+                  : cycleRunning
+                    ? "SEO action in progress"
+                    : undefined
+            }
+          >
+            {cycleRunning ? "Running…" : "Run SEO action"}
+          </Button>
         }
       />
 
       {showUpsell ? <AutomationUpsell className="mt-6" /> : null}
+
+      <SearchConsolePanel
+        projectId={project.id}
+        gsc={gsc}
+        disabled={cycleRunning}
+        justConnected={gscJustConnected}
+        onConnected={refresh}
+      />
 
       <section className="mt-8 max-w-xl">
         <h2 className="text-sm font-medium text-[var(--fg-muted)]">Work programs</h2>

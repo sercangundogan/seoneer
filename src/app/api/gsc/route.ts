@@ -1,6 +1,11 @@
 import { json, requireSession } from "@/lib/api";
+import { env } from "@/lib/env";
 import { getProjectForUser } from "@/modules/projects/service";
 import { getGscOAuthUrl, completeGscOAuth } from "@/modules/search-console/service";
+
+function googleOAuthConfigured() {
+  return Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+}
 
 export async function GET(request: Request) {
   const session = await requireSession();
@@ -9,7 +14,11 @@ export async function GET(request: Request) {
   if (!projectId) return json({ error: "projectId required" }, 400);
   const project = await getProjectForUser(projectId, session.user.id);
   if (!project) return json({ error: "Not found" }, 404);
-  return json({ url: getGscOAuthUrl(projectId) });
+  const configured = googleOAuthConfigured();
+  return json({
+    configured,
+    url: configured ? getGscOAuthUrl(projectId) : null,
+  });
 }
 
 export async function POST(request: Request) {

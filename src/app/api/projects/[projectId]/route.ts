@@ -39,6 +39,7 @@ export async function GET(_req: Request, { params }: Params) {
       latestPullRequest,
       repository,
       workProgramRows,
+      gscConnection,
     ] = await Promise.all([
       getLatestIntelligence(projectId),
       db.query.seoAudits.findFirst({
@@ -62,6 +63,9 @@ export async function GET(_req: Request, { params }: Params) {
       }),
       getProjectRepository(projectId),
       listWorkPrograms(projectId),
+      db.query.gscConnections.findFirst({
+        where: eq(schema.gscConnections.projectId, projectId),
+      }),
     ]);
 
     const reviewUrl = latestPullRequest
@@ -83,6 +87,9 @@ export async function GET(_req: Request, { params }: Params) {
       logs,
       billing,
       workPrograms: serializeWorkPrograms(workProgramRows),
+      gsc: gscConnection
+        ? { connected: true as const, siteUrl: gscConnection.siteUrl }
+        : { connected: false as const, siteUrl: null },
       latestPullRequest: latestPullRequest
         ? {
             id: latestPullRequest.id,
