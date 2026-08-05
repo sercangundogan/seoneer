@@ -226,6 +226,24 @@ describe("agent schemas", () => {
         contentFiles: ["content/blog/hi.mdx"],
         hasSitemap: false,
         hasRobots: false,
+        appRoot: "src/app",
+        sitemap: {
+          kind: "none",
+          path: null,
+          isHomepageOnly: false,
+          hasGenerateSitemaps: false,
+        },
+        robots: { kind: "none", path: null },
+        layout: {
+          path: null,
+          hasMetadataExport: false,
+          hasGenerateMetadata: false,
+          hasOpenGraph: false,
+          hasTwitterCard: false,
+          hasCanonical: false,
+          hasJsonLd: false,
+        },
+        hasNextSitemapPackage: false,
       },
     } satisfies RepoAnalysisSummary;
 
