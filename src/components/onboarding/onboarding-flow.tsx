@@ -54,7 +54,18 @@ export default function OnboardingFlow() {
   );
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"danger" | "muted">("danger");
   const [analysisStatus, setAnalysisStatus] = useState("");
+
+  const showMessage = useCallback((text: string, tone: "danger" | "muted" = "danger") => {
+    setMessageTone(tone);
+    setMessage(text);
+  }, []);
+
+  const clearMessage = useCallback(() => {
+    setMessage("");
+    setMessageTone("danger");
+  }, []);
 
   const selectedInstallationMeta = useMemo(
     () => installations.find((i) => i.id === selectedInstallation),
@@ -85,34 +96,41 @@ export default function OnboardingFlow() {
     setRepos(nextRepos);
     // Auto-select when there is only one repository
     setSelectedRepo(nextRepos.length === 1 ? nextRepos[0] : null);
-    if (data.warning) setMessage(data.warning);
+    if (data.warning) showMessage(data.warning, "muted");
     setStep(2);
-  }, []);
+  }, [showMessage]);
 
-  const syncInstallations = useCallback(async () => {
-    setBusy(true);
-    setMessage("");
-    try {
-      const res = await fetch("/api/github/installations?sync=1");
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Sync failed");
-      setInstallUrl(data.installUrl ?? "");
-      applyInstallations(data.installations ?? []);
-      if ((data.installations?.length ?? 0) === 0) {
-        setMessage(
-          "No GitHub App installations found yet. Install the app, then click “I’ve already installed — sync”.",
-        );
-        return;
+  const syncInstallations = useCallback(
+    async (opts?: { notifyIfEmpty?: boolean }) => {
+      setBusy(true);
+      clearMessage();
+      try {
+        const res = await fetch("/api/github/installations?sync=1");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Sync failed");
+        setInstallUrl(data.installUrl ?? "");
+        applyInstallations(data.installations ?? []);
+        if ((data.installations?.length ?? 0) === 0) {
+          // First login is empty by design — only nudge after the user asked to sync.
+          if (opts?.notifyIfEmpty) {
+            showMessage(
+              "No GitHub App installations found yet. Install the app, then click “I’ve already installed — sync”.",
+              "muted",
+            );
+          }
+          return;
+        }
+        if (data.installations.length === 1) {
+          await loadReposForInstallation(data.installations[0].installationId);
+        }
+      } catch (error) {
+        showMessage(error instanceof Error ? error.message : "Could not sync installations");
+      } finally {
+        setBusy(false);
       }
-      if (data.installations.length === 1) {
-        await loadReposForInstallation(data.installations[0].installationId);
-      }
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not sync installations");
-    } finally {
-      setBusy(false);
-    }
-  }, [applyInstallations, loadReposForInstallation]);
+    },
+    [applyInstallations, clearMessage, loadReposForInstallation, showMessage],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -124,7 +142,7 @@ export default function OnboardingFlow() {
       try {
         if (installationId) {
           setBusy(true);
-          setMessage("");
+          clearMessage();
           try {
             await fetch("/api/github/installations", {
               method: "POST",
@@ -136,7 +154,7 @@ export default function OnboardingFlow() {
             window.history.replaceState({}, "", "/onboarding");
           } catch (error) {
             if (!cancelled) {
-              setMessage(error instanceof Error ? error.message : "Install callback failed");
+              showMessage(error instanceof Error ? error.message : "Install callback failed");
             }
           } finally {
             if (!cancelled) setBusy(false);
@@ -150,6 +168,7 @@ export default function OnboardingFlow() {
         setInstallUrl(data.installUrl);
         applyInstallations(data.installations ?? []);
 
+        // Quiet recovery sync — never surface the empty-state nudge on first login.
         if ((data.installations?.length ?? 0) === 0) {
           await syncInstallations();
         }
@@ -168,11 +187,11 @@ export default function OnboardingFlow() {
   async function loadRepos() {
     if (!selectedInstallationMeta) return;
     setBusy(true);
-    setMessage("");
+    clearMessage();
     try {
       await loadReposForInstallation(selectedInstallationMeta.installationId);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not load repositories");
+      showMessage(error instanceof Error ? error.message : "Could not load repositories");
     } finally {
       setBusy(false);
     }
@@ -181,7 +200,7 @@ export default function OnboardingFlow() {
   async function createProject() {
     if (!selectedRepo || !selectedInstallation || busy) return;
     setBusy(true);
-    setMessage("");
+    clearMessage();
     setAnalysisStatus("Creating project…");
     try {
       const res = await fetch("/api/projects", {
@@ -246,7 +265,7 @@ export default function OnboardingFlow() {
         "Analysis is taking longer than expected. Open Overview later, or go back and try again.",
       );
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Error");
+      showMessage(e instanceof Error ? e.message : "Error");
       setAnalysisStatus("");
     } finally {
       setBusy(false);
@@ -256,7 +275,7 @@ export default function OnboardingFlow() {
   async function finish() {
     if (!projectId || !hasEnabledProgram) return;
     setBusy(true);
-    setMessage("");
+    clearMessage();
     try {
       const res = await fetch(`/api/projects/${projectId}`, {
         method: "PATCH",
@@ -273,7 +292,7 @@ export default function OnboardingFlow() {
       if (!res.ok) throw new Error(body.error ?? "Failed to finish onboarding");
       router.push(`/projects/${projectId}?live=1`);
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Error");
+      showMessage(e instanceof Error ? e.message : "Error");
     } finally {
       setBusy(false);
     }
@@ -291,7 +310,15 @@ export default function OnboardingFlow() {
         ))}
       </ol>
 
-      {message ? <p className="mb-4 text-sm text-[var(--danger)]">{message}</p> : null}
+      {message ? (
+        <p
+          className={`mb-4 text-sm ${
+            messageTone === "muted" ? "text-[var(--fg-muted)]" : "text-[var(--danger)]"
+          }`}
+        >
+          {message}
+        </p>
+      ) : null}
 
       {booting ? <OnboardingSkeleton /> : null}
 
@@ -312,7 +339,7 @@ export default function OnboardingFlow() {
               type="button"
               variant="secondary"
               loading={busy}
-              onClick={() => void syncInstallations()}
+              onClick={() => void syncInstallations({ notifyIfEmpty: true })}
             >
               I’ve already installed — sync
             </Button>
@@ -381,7 +408,7 @@ export default function OnboardingFlow() {
               variant="secondary"
               disabled={busy}
               onClick={() => {
-                setMessage("");
+                clearMessage();
                 setAnalysisStatus("");
                 setSelectedRepo(null);
                 setRepos([]);
